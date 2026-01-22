@@ -71,12 +71,14 @@ class FallDetectionApp:
             min_tracking_confidence=0.5
         )
         
-        # Fall detector
+        # Fall detector - More sensitive settings for better detection
         self.fall_detector = FallDetector(
             history_size=15,
-            fall_head_threshold=0.65,
-            horizontal_ratio_threshold=0.8,
-            fall_confirm_frames=8
+            fall_head_threshold=0.55,        # Head at 55% down = "low" (was 0.65)
+            horizontal_ratio_threshold=0.5,   # Easier to detect horizontal (was 0.8)
+            fall_confirm_frames=5,            # Faster confirmation (was 8)
+            head_velocity_threshold=8.0,      # More sensitive to falling motion (was 15)
+            recovery_frames=8                 # Faster recovery check
         )
         
         # FPS tracking

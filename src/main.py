@@ -169,8 +169,8 @@ class FallDetectionApp:
         """
         height = frame.shape[0]
         
-        # Debug info box at bottom
-        debug_y_start = height - 80
+        # Debug info box at bottom (expanded for new metrics)
+        debug_y_start = height - 110
         cv2.rectangle(frame, (0, debug_y_start), (300, height), (0, 0, 0), -1)
         
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -181,7 +181,9 @@ class FallDetectionApp:
             f"Body Angle: {metrics.body_angle:.1f} deg",
             f"Head Height: {metrics.head_height_ratio:.2f}",
             f"Head Velocity: {metrics.head_velocity:.1f} px/f",
-            f"SH Ratio: {metrics.shoulder_hip_ratio:.2f}"
+            f"SH Ratio: {metrics.shoulder_hip_ratio:.2f}",
+            f"Hip Height: {metrics.hip_height_ratio:.2f}",
+            f"Leg Compress: {metrics.leg_compression:.2f}"
         ]
         
         for i, line in enumerate(lines):

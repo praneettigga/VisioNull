@@ -40,12 +40,16 @@ class FallMetrics:
         head_height_ratio: Head Y position as ratio of frame height (0=top, 1=bottom)
         head_velocity: Rate of head movement (positive = moving down)
         shoulder_hip_ratio: Ratio of horizontal to vertical distance (>1 = horizontal)
+        hip_height_ratio: Hip Y position as ratio of frame height (0=top, 1=bottom)
+        leg_compression: How compressed the legs are (0=fully extended, 1=fully compressed)
         confidence: Confidence in current state (0-1)
     """
     body_angle: float
     head_height_ratio: float
     head_velocity: float
     shoulder_hip_ratio: float
+    hip_height_ratio: float
+    leg_compression: float
     confidence: float
 
 
@@ -70,11 +74,13 @@ class FallDetector:
     def __init__(
         self,
         history_size: int = 15,
-        fall_head_threshold: float = 0.65,
+        fall_head_threshold: float = 0.55,
         horizontal_ratio_threshold: float = 0.8,
         fall_confirm_frames: int = 8,
         head_velocity_threshold: float = 15.0,
-        recovery_frames: int = 10
+        recovery_frames: int = 10,
+        hip_height_threshold: float = 0.65,
+        leg_compression_threshold: float = 0.6
     ):
         """
         Initialize the fall detector.
@@ -86,6 +92,8 @@ class FallDetector:
             fall_confirm_frames: Frames the person must be horizontal+low to confirm fall
             head_velocity_threshold: Minimum head velocity (pixels/frame) to detect falling motion
             recovery_frames: Frames standing before exiting fallen state
+            hip_height_threshold: Hip Y ratio (0-1) above which hips are "low" (on ground)
+            leg_compression_threshold: Leg compression ratio (0-1) above which legs are compressed
         """
         self.history_size = history_size
         self.fall_head_threshold = fall_head_threshold
@@ -93,6 +101,8 @@ class FallDetector:
         self.fall_confirm_frames = fall_confirm_frames
         self.head_velocity_threshold = head_velocity_threshold
         self.recovery_frames = recovery_frames
+        self.hip_height_threshold = hip_height_threshold
+        self.leg_compression_threshold = leg_compression_threshold
         
         # State tracking
         self.current_state = FallState.UNKNOWN
@@ -104,7 +114,9 @@ class FallDetector:
         
         print(f"FallDetector initialized:")
         print(f"  Head threshold: {fall_head_threshold}")
+        print(f"  Hip threshold: {hip_height_threshold}")
         print(f"  Horizontal ratio: {horizontal_ratio_threshold}")
+        print(f"  Leg compression threshold: {leg_compression_threshold}")
         print(f"  Confirm frames: {fall_confirm_frames}")
     
     def _get_midpoint(self, lm1: Landmark, lm2: Landmark) -> Tuple[float, float]:
@@ -115,12 +127,12 @@ class FallDetector:
         self,
         landmarks: List[Landmark],
         frame_height: int
-    ) -> Tuple[float, float, float]:
+    ) -> Tuple[float, float, float, float, float]:
         """
         Compute body orientation metrics.
         
         Returns:
-            Tuple of (shoulder_hip_ratio, body_angle, head_height_ratio)
+            Tuple of (shoulder_hip_ratio, body_angle, head_height_ratio, hip_height_ratio, leg_compression)
         """
         # Get key landmarks
         nose = landmarks[PoseEstimator.NOSE]
@@ -128,6 +140,10 @@ class FallDetector:
         right_shoulder = landmarks[PoseEstimator.RIGHT_SHOULDER]
         left_hip = landmarks[PoseEstimator.LEFT_HIP]
         right_hip = landmarks[PoseEstimator.RIGHT_HIP]
+        left_knee = landmarks[PoseEstimator.LEFT_KNEE]
+        right_knee = landmarks[PoseEstimator.RIGHT_KNEE]
+        left_ankle = landmarks[PoseEstimator.LEFT_ANKLE]
+        right_ankle = landmarks[PoseEstimator.RIGHT_ANKLE]
         
         # Calculate shoulder and hip midpoints
         shoulder_mid = self._get_midpoint(left_shoulder, right_shoulder)
@@ -156,7 +172,29 @@ class FallDetector:
         # Compute head height ratio (0 = top, 1 = bottom)
         head_height_ratio = nose.y / frame_height
         
-        return shoulder_hip_ratio, body_angle, head_height_ratio
+        # Compute hip height ratio (0 = top, 1 = bottom)
+        hip_height_ratio = hip_mid[1] / frame_height
+        
+        # Compute leg compression (how compressed the legs are)
+        # When standing, distance from hips to ankles is large
+        # When sitting/fallen, this distance is small
+        knee_mid = self._get_midpoint(left_knee, right_knee)
+        ankle_mid = self._get_midpoint(left_ankle, right_ankle)
+        
+        # Full leg length approximation (hip to ankle vertical distance when standing)
+        # Typically about 50% of frame height for a standing person
+        expected_leg_length = frame_height * 0.4
+        
+        # Actual vertical distance from hips to ankles
+        actual_leg_vertical = abs(ankle_mid[1] - hip_mid[1])
+        
+        # Leg compression: 1 = fully compressed (sitting), 0 = fully extended (standing)
+        if expected_leg_length > 0:
+            leg_compression = 1.0 - min(actual_leg_vertical / expected_leg_length, 1.0)
+        else:
+            leg_compression = 0.0
+        
+        return shoulder_hip_ratio, body_angle, head_height_ratio, hip_height_ratio, leg_compression
     
     def _compute_head_velocity(self) -> float:
         """
@@ -202,6 +240,8 @@ class FallDetector:
                 head_height_ratio=0,
                 head_velocity=0,
                 shoulder_hip_ratio=0,
+                hip_height_ratio=0,
+                leg_compression=0,
                 confidence=0.0
             )
         
@@ -222,11 +262,13 @@ class FallDetector:
                     head_height_ratio=0,
                     head_velocity=0,
                     shoulder_hip_ratio=0,
+                    hip_height_ratio=0,
+                    leg_compression=0,
                     confidence=0.2
                 )
         
         # Compute metrics
-        shoulder_hip_ratio, body_angle, head_height_ratio = self._compute_body_metrics(
+        shoulder_hip_ratio, body_angle, head_height_ratio, hip_height_ratio, leg_compression = self._compute_body_metrics(
             landmarks, frame_height
         )
         
@@ -236,7 +278,7 @@ class FallDetector:
         # Compute head velocity
         head_velocity = self._compute_head_velocity()
         
-        # Determine if body is horizontal
+        # Determine if body is horizontal (lying down)
         is_horizontal = (
             shoulder_hip_ratio > self.horizontal_ratio_threshold or
             body_angle > 45
@@ -245,13 +287,28 @@ class FallDetector:
         # Determine if head is low
         is_head_low = head_height_ratio > self.fall_head_threshold
         
+        # NEW: Determine if person is on the ground (sitting/crawling)
+        # This catches cases where torso is upright but person is on ground
+        is_on_ground = (
+            hip_height_ratio > self.hip_height_threshold or  # Hips are low in frame
+            leg_compression > self.leg_compression_threshold  # Legs are compressed (sitting/kneeling)
+        )
+        
         # Determine if currently falling (rapid downward motion)
         is_falling_motion = head_velocity > self.head_velocity_threshold
         
         # State machine logic
         confidence = 0.5
         
-        if is_horizontal and is_head_low:
+        # Fall detected if:
+        # 1. Original condition: horizontal body AND head low, OR
+        # 2. New condition: on ground (high hip position OR compressed legs) AND head not at standing height
+        is_fall_position = (
+            (is_horizontal and is_head_low) or  # Original: lying down
+            (is_on_ground and head_height_ratio > 0.40)  # New: sitting/crawling with head below 40% of frame
+        )
+        
+        if is_fall_position:
             # Potential fall condition
             self.horizontal_count += 1
             self.standing_count = 0
@@ -286,6 +343,8 @@ class FallDetector:
             head_height_ratio=head_height_ratio,
             head_velocity=head_velocity,
             shoulder_hip_ratio=shoulder_hip_ratio,
+            hip_height_ratio=hip_height_ratio,
+            leg_compression=leg_compression,
             confidence=confidence
         )
         

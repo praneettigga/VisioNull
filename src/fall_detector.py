@@ -17,9 +17,9 @@ from enum import Enum
 
 # Import Landmark from pose_estimator (for type hints)
 try:
-    from pose_estimator import Landmark, PoseEstimator
-except ImportError:
     from src.pose_estimator import Landmark, PoseEstimator
+except ImportError:
+    from pose_estimator import Landmark, PoseEstimator
 
 
 class FallState(Enum):

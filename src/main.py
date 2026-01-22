@@ -14,13 +14,13 @@ from typing import Optional
 
 # Import project modules
 try:
-    from camera_stream import CameraStream
-    from pose_estimator import PoseEstimator
-    from fall_detector import FallDetector, FallState
-except ImportError:
     from src.camera_stream import CameraStream
     from src.pose_estimator import PoseEstimator
     from src.fall_detector import FallDetector, FallState
+except ImportError:
+    from camera_stream import CameraStream
+    from pose_estimator import PoseEstimator
+    from fall_detector import FallDetector, FallState
 
 
 class FallDetectionApp:

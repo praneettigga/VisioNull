@@ -1,0 +1,13 @@
+# Fall Detection System Dependencies
+# For Raspberry Pi with Python 3
+
+# OpenCV for camera capture and drawing
+opencv-python>=4.5.0
+
+# MediaPipe for pose estimation
+# Note: On Raspberry Pi, you may need to install mediapipe-rpi4 instead
+# pip install mediapipe-rpi4
+mediapipe>=0.10.0
+
+# NumPy for numerical operations
+numpy>=1.21.0

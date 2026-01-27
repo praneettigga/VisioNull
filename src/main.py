@@ -14,13 +14,13 @@ from typing import Optional
 
 # Import project modules
 try:
-    from camera_stream import CameraStream
-    from pose_estimator import PoseEstimator
-    from fall_detector import FallDetector, FallState
-except ImportError:
     from src.camera_stream import CameraStream
     from src.pose_estimator import PoseEstimator
     from src.fall_detector import FallDetector, FallState
+except ImportError:
+    from camera_stream import CameraStream
+    from pose_estimator import PoseEstimator
+    from fall_detector import FallDetector, FallState
 
 
 class FallDetectionApp:
@@ -71,12 +71,14 @@ class FallDetectionApp:
             min_tracking_confidence=0.5
         )
         
-        # Fall detector
+        # Fall detector - More sensitive settings for better detection
         self.fall_detector = FallDetector(
             history_size=15,
-            fall_head_threshold=0.65,
-            horizontal_ratio_threshold=0.8,
-            fall_confirm_frames=8
+            fall_head_threshold=0.55,        # Head at 55% down = "low" (was 0.65)
+            horizontal_ratio_threshold=0.5,   # Easier to detect horizontal (was 0.8)
+            fall_confirm_frames=5,            # Faster confirmation (was 8)
+            head_velocity_threshold=8.0,      # More sensitive to falling motion (was 15)
+            recovery_frames=8                 # Faster recovery check
         )
         
         # FPS tracking
@@ -167,8 +169,8 @@ class FallDetectionApp:
         """
         height = frame.shape[0]
         
-        # Debug info box at bottom
-        debug_y_start = height - 80
+        # Debug info box at bottom (expanded for new metrics)
+        debug_y_start = height - 110
         cv2.rectangle(frame, (0, debug_y_start), (300, height), (0, 0, 0), -1)
         
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -179,7 +181,9 @@ class FallDetectionApp:
             f"Body Angle: {metrics.body_angle:.1f} deg",
             f"Head Height: {metrics.head_height_ratio:.2f}",
             f"Head Velocity: {metrics.head_velocity:.1f} px/f",
-            f"SH Ratio: {metrics.shoulder_hip_ratio:.2f}"
+            f"SH Ratio: {metrics.shoulder_hip_ratio:.2f}",
+            f"Hip Height: {metrics.hip_height_ratio:.2f}",
+            f"Leg Compress: {metrics.leg_compression:.2f}"
         ]
         
         for i, line in enumerate(lines):

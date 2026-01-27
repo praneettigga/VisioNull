@@ -1,13 +1,18 @@
 """
 Pose Estimator Module
-Wrapper around MediaPipe Pose for lightweight pose estimation.
+Wrapper around MediaPipe Pose Landmarker (Tasks Vision API) for lightweight pose estimation.
+Updated to work with MediaPipe 0.10.x which uses the new Tasks Vision API.
 """
 
 import cv2
 import numpy as np
-import mediapipe as mp
-from typing import Optional, List, Tuple, NamedTuple
+from typing import Optional, List, Tuple
 from dataclasses import dataclass
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+import urllib.request
+import os
 
 
 @dataclass
@@ -31,8 +36,8 @@ class Landmark:
 
 class PoseEstimator:
     """
-    Wrapper around MediaPipe Pose for efficient pose estimation.
-    Uses the lightweight model suitable for Raspberry Pi.
+    Wrapper around MediaPipe Pose Landmarker for efficient pose estimation.
+    Uses the lightweight model suitable for laptops and Raspberry Pi.
     """
     
     # MediaPipe Pose landmark names (indices 0-32)
@@ -59,6 +64,10 @@ class PoseEstimator:
     LEFT_KNEE = 25
     RIGHT_KNEE = 26
     
+    # Model URL for downloading
+    MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+    MODEL_PATH = "pose_landmarker_lite.task"
+    
     def __init__(
         self,
         model_complexity: int = 0,
@@ -73,27 +82,37 @@ class PoseEstimator:
             model_complexity: 0 (lite), 1 (full), or 2 (heavy). Use 0 for Raspberry Pi.
             min_detection_confidence: Minimum confidence for person detection
             min_tracking_confidence: Minimum confidence for landmark tracking
-            static_image_mode: If True, treats each frame independently (slower but more accurate)
+            static_image_mode: If True, treats each frame independently
         """
         self.model_complexity = model_complexity
         self.min_detection_confidence = min_detection_confidence
         self.min_tracking_confidence = min_tracking_confidence
         
-        # Initialize MediaPipe Pose
-        self.mp_pose = mp.solutions.pose
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
+        # Download model if not present
+        self._ensure_model_downloaded()
         
-        self.pose = self.mp_pose.Pose(
-            static_image_mode=static_image_mode,
-            model_complexity=model_complexity,
-            smooth_landmarks=True,
-            enable_segmentation=False,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence
+        # Initialize MediaPipe Pose Landmarker with Tasks API
+        base_options = python.BaseOptions(model_asset_path=self.MODEL_PATH)
+        
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+            output_segmentation_masks=False
         )
         
+        self.landmarker = vision.PoseLandmarker.create_from_options(options)
+        
         print(f"PoseEstimator initialized (model_complexity={model_complexity})")
+    
+    def _ensure_model_downloaded(self):
+        """Download the pose landmarker model if not present."""
+        if not os.path.exists(self.MODEL_PATH):
+            print(f"Downloading pose landmarker model...")
+            urllib.request.urlretrieve(self.MODEL_URL, self.MODEL_PATH)
+            print(f"Model downloaded to {self.MODEL_PATH}")
     
     def get_landmarks(
         self,
@@ -117,22 +136,35 @@ class PoseEstimator:
         # Convert BGR to RGB for MediaPipe
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         
+        # Create MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        
         # Process the frame
-        results = self.pose.process(frame_rgb)
+        results = self.landmarker.detect(mp_image)
         
         # Check if pose was detected
-        if results.pose_landmarks is None:
+        if not results.pose_landmarks or len(results.pose_landmarks) == 0:
             return None
+        
+        # Get first pose (we only track one person)
+        pose_landmarks = results.pose_landmarks[0]
         
         # Convert normalized landmarks to pixel coordinates
         landmarks = []
-        for idx, lm in enumerate(results.pose_landmarks.landmark):
+        for idx, lm in enumerate(pose_landmarks):
+            # Get visibility from world landmarks if available
+            visibility = 0.9  # Default high visibility
+            if results.pose_world_landmarks and len(results.pose_world_landmarks) > 0:
+                world_lm = results.pose_world_landmarks[0]
+                if idx < len(world_lm):
+                    visibility = getattr(world_lm[idx], 'visibility', 0.9)
+            
             landmark = Landmark(
                 x=lm.x * width,
                 y=lm.y * height,
                 z=lm.z,  # Keep relative depth as-is
-                visibility=lm.visibility,
-                name=self.LANDMARK_NAMES[idx]
+                visibility=visibility if hasattr(lm, 'visibility') else 0.9,
+                name=self.LANDMARK_NAMES[idx] if idx < len(self.LANDMARK_NAMES) else f"landmark_{idx}"
             )
             landmarks.append(landmark)
         
@@ -205,7 +237,8 @@ class PoseEstimator:
             ]
             
             for start_idx, end_idx in connections:
-                if (landmarks[start_idx].visibility > 0.5 and 
+                if (start_idx < len(landmarks) and end_idx < len(landmarks) and
+                    landmarks[start_idx].visibility > 0.5 and 
                     landmarks[end_idx].visibility > 0.5):
                     start_point = (int(landmarks[start_idx].x), int(landmarks[start_idx].y))
                     end_point = (int(landmarks[end_idx].x), int(landmarks[end_idx].y))
@@ -251,7 +284,7 @@ class PoseEstimator:
     
     def close(self) -> None:
         """Release MediaPipe resources."""
-        self.pose.close()
+        self.landmarker.close()
         print("PoseEstimator closed")
 
 
@@ -260,7 +293,7 @@ def main():
     Test the pose estimator by displaying skeleton overlay on camera feed.
     Press 'q' to quit.
     """
-    from camera_stream import CameraStream
+    from src.camera_stream import CameraStream
     
     print("=" * 50)
     print("Pose Estimator Test")

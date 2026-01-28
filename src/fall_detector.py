@@ -7,9 +7,14 @@ Fall Detection Logic:
 2. Track head height (y position) relative to frame
 3. Detect rapid downward head movement (velocity)
 4. Confirm fall when body is horizontal AND head is low for several frames
+5. Post-validation: person must stay down for X seconds to confirm true fall
+
+Updated for Raspberry Pi deployment with post-fall validation.
 """
 
 import numpy as np
+import time
+import logging
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
 from collections import deque
@@ -18,8 +23,16 @@ from enum import Enum
 # Import Landmark from pose_estimator (for type hints)
 try:
     from src.pose_estimator import Landmark, PoseEstimator
+    from src import config
 except ImportError:
     from pose_estimator import Landmark, PoseEstimator
+    try:
+        import config
+    except ImportError:
+        config = None
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 
 class FallState(Enum):
@@ -28,6 +41,7 @@ class FallState(Enum):
     STANDING = "standing"
     FALLING = "falling"
     FALLEN = "fallen"
+    VALIDATING = "validating"  # New: Post-fall validation in progress
 
 
 @dataclass
@@ -43,6 +57,7 @@ class FallMetrics:
         hip_height_ratio: Hip Y position as ratio of frame height (0=top, 1=bottom)
         leg_compression: How compressed the legs are (0=fully extended, 1=fully compressed)
         confidence: Confidence in current state (0-1)
+        validation_time: Seconds remaining in post-fall validation (0 if not validating)
     """
     body_angle: float
     head_height_ratio: float
@@ -51,6 +66,7 @@ class FallMetrics:
     hip_height_ratio: float
     leg_compression: float
     confidence: float
+    validation_time: float = 0.0  # New field
 
 
 class FallDetector:
@@ -80,7 +96,9 @@ class FallDetector:
         head_velocity_threshold: float = 15.0,
         recovery_frames: int = 10,
         hip_height_threshold: float = 0.65,
-        leg_compression_threshold: float = 0.6
+        leg_compression_threshold: float = 0.6,
+        post_fall_validation_seconds: float = 2.0,
+        confidence_threshold: float = 0.7
     ):
         """
         Initialize the fall detector.
@@ -94,6 +112,8 @@ class FallDetector:
             recovery_frames: Frames standing before exiting fallen state
             hip_height_threshold: Hip Y ratio (0-1) above which hips are "low" (on ground)
             leg_compression_threshold: Leg compression ratio (0-1) above which legs are compressed
+            post_fall_validation_seconds: Seconds person must stay down after initial detection
+            confidence_threshold: Minimum confidence to trigger notification
         """
         self.history_size = history_size
         self.fall_head_threshold = fall_head_threshold
@@ -103,6 +123,8 @@ class FallDetector:
         self.recovery_frames = recovery_frames
         self.hip_height_threshold = hip_height_threshold
         self.leg_compression_threshold = leg_compression_threshold
+        self.post_fall_validation_seconds = post_fall_validation_seconds
+        self.confidence_threshold = confidence_threshold
         
         # State tracking
         self.current_state = FallState.UNKNOWN
@@ -112,12 +134,29 @@ class FallDetector:
         self.standing_count = 0
         self.frame_height = 480  # Will be updated from landmarks
         
+        # Post-fall validation tracking
+        self._validation_start_time: Optional[float] = None
+        self._fall_validated = False
+        self._last_validation_time = 0.0
+        
+        # Load config if available
+        if config is not None:
+            self.fall_head_threshold = getattr(config, 'FALL_HEAD_THRESHOLD', fall_head_threshold)
+            self.horizontal_ratio_threshold = getattr(config, 'HORIZONTAL_RATIO_THRESHOLD', horizontal_ratio_threshold)
+            self.fall_confirm_frames = getattr(config, 'FALL_CONFIRM_FRAMES', fall_confirm_frames)
+            self.head_velocity_threshold = getattr(config, 'HEAD_VELOCITY_THRESHOLD', head_velocity_threshold)
+            self.post_fall_validation_seconds = getattr(config, 'POST_FALL_VALIDATION_SECONDS', post_fall_validation_seconds)
+            self.confidence_threshold = getattr(config, 'FALL_CONFIDENCE_THRESHOLD', confidence_threshold)
+        
+        logger.info(f"FallDetector initialized with post-fall validation: {self.post_fall_validation_seconds}s")
         print(f"FallDetector initialized:")
-        print(f"  Head threshold: {fall_head_threshold}")
-        print(f"  Hip threshold: {hip_height_threshold}")
-        print(f"  Horizontal ratio: {horizontal_ratio_threshold}")
-        print(f"  Leg compression threshold: {leg_compression_threshold}")
-        print(f"  Confirm frames: {fall_confirm_frames}")
+        print(f"  Head threshold: {self.fall_head_threshold}")
+        print(f"  Hip threshold: {self.hip_height_threshold}")
+        print(f"  Horizontal ratio: {self.horizontal_ratio_threshold}")
+        print(f"  Leg compression threshold: {self.leg_compression_threshold}")
+        print(f"  Confirm frames: {self.fall_confirm_frames}")
+        print(f"  Post-fall validation: {self.post_fall_validation_seconds}s")
+        print(f"  Confidence threshold: {self.confidence_threshold}")
     
     def _get_midpoint(self, lm1: Landmark, lm2: Landmark) -> Tuple[float, float]:
         """Get midpoint between two landmarks."""
@@ -299,6 +338,7 @@ class FallDetector:
         
         # State machine logic
         confidence = 0.5
+        validation_time = 0.0
         
         # Fall detected if:
         # 1. Original condition: horizontal body AND head low, OR
@@ -308,6 +348,8 @@ class FallDetector:
             (is_on_ground and head_height_ratio > 0.40)  # New: sitting/crawling with head below 40% of frame
         )
         
+        current_time = time.time()
+        
         if is_fall_position:
             # Potential fall condition
             self.horizontal_count += 1
@@ -316,9 +358,32 @@ class FallDetector:
             if is_falling_motion:
                 self.current_state = FallState.FALLING
                 confidence = 0.7
+                self._validation_start_time = None  # Reset validation
             elif self.horizontal_count >= self.fall_confirm_frames:
-                self.current_state = FallState.FALLEN
-                confidence = 0.9
+                # Initial fall confirmed, now enter validation phase
+                if self.current_state not in [FallState.VALIDATING, FallState.FALLEN]:
+                    # Start validation timer
+                    self._validation_start_time = current_time
+                    self.current_state = FallState.VALIDATING
+                    self._fall_validated = False
+                    logger.info("Fall initially detected, starting post-validation...")
+                
+                if self.current_state == FallState.VALIDATING:
+                    # Check if validation period has passed
+                    elapsed = current_time - self._validation_start_time
+                    validation_time = max(0, self.post_fall_validation_seconds - elapsed)
+                    
+                    if elapsed >= self.post_fall_validation_seconds:
+                        # Validation complete - person stayed down
+                        self.current_state = FallState.FALLEN
+                        self._fall_validated = True
+                        confidence = 0.95
+                        logger.info(f"Fall VALIDATED after {elapsed:.1f}s - person remained down")
+                    else:
+                        confidence = 0.7 + (0.2 * elapsed / self.post_fall_validation_seconds)
+                elif self.current_state == FallState.FALLEN:
+                    confidence = 0.95
+                    
             elif self.horizontal_count >= 3:
                 self.current_state = FallState.FALLING
                 confidence = 0.6
@@ -326,12 +391,20 @@ class FallDetector:
             # Not in fall position
             self.horizontal_count = max(0, self.horizontal_count - 1)
             
-            if self.current_state in [FallState.FALLEN, FallState.FALLING]:
+            # Reset validation if person gets up during validation
+            if self.current_state == FallState.VALIDATING:
+                logger.info("Person recovered during validation - false positive avoided")
+                self._validation_start_time = None
+            
+            if self.current_state in [FallState.FALLEN, FallState.FALLING, FallState.VALIDATING]:
                 # Recovery from fall
                 self.standing_count += 1
                 if self.standing_count >= self.recovery_frames:
                     self.current_state = FallState.STANDING
+                    self._fall_validated = False
+                    self._validation_start_time = None
                     confidence = 0.8
+                    logger.info("Person recovered - state reset to STANDING")
             else:
                 self.current_state = FallState.STANDING
                 self.standing_count += 1
@@ -345,10 +418,19 @@ class FallDetector:
             shoulder_hip_ratio=shoulder_hip_ratio,
             hip_height_ratio=hip_height_ratio,
             leg_compression=leg_compression,
-            confidence=confidence
+            confidence=confidence,
+            validation_time=validation_time
         )
         
         return self.current_state, metrics
+    
+    def is_fall_validated(self) -> bool:
+        """Check if a fall has been validated (passed post-validation)."""
+        return self._fall_validated and self.current_state == FallState.FALLEN
+    
+    def get_confidence_threshold(self) -> float:
+        """Get the confidence threshold for notifications."""
+        return self.confidence_threshold
     
     def reset(self) -> None:
         """Reset all state tracking."""
@@ -357,6 +439,9 @@ class FallDetector:
         self.state_history.clear()
         self.horizontal_count = 0
         self.standing_count = 0
+        self._validation_start_time = None
+        self._fall_validated = False
+        logger.info("FallDetector state reset")
 
 
 def main():

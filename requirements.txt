@@ -1,13 +1,64 @@
 # Fall Detection System Dependencies
-# For Raspberry Pi with Python 3
+# For Raspberry Pi 4 with Pi Camera Module
 
-# OpenCV for camera capture and drawing
+# =============================================================================
+# Core Dependencies
+# =============================================================================
+
+# OpenCV for image processing
+# On Raspberry Pi, install system package for better performance:
+#   sudo apt install python3-opencv
 opencv-python>=4.5.0
 
 # MediaPipe for pose estimation
-# Note: On Raspberry Pi, you may need to install mediapipe-rpi4 instead
-# pip install mediapipe-rpi4
+# Note: On Raspberry Pi, you may need to build from source or use:
+#   pip install mediapipe-rpi4
 mediapipe>=0.10.0
 
 # NumPy for numerical operations
 numpy>=1.21.0
+
+# =============================================================================
+# Raspberry Pi Camera (picamera2)
+# =============================================================================
+
+# picamera2 - Modern Pi Camera library for Raspberry Pi OS Bullseye/Bookworm
+# Install on Raspberry Pi with:
+#   sudo apt install python3-picamera2
+#
+# Note: picamera2 is best installed via apt on Raspberry Pi, not pip
+# If you need to install via pip (not recommended on Pi):
+# picamera2>=0.3.12
+
+# =============================================================================
+# Optional Dependencies
+# =============================================================================
+
+# Requests (if you prefer it over urllib for webhooks)
+# requests>=2.28.0
+
+# =============================================================================
+# Raspberry Pi Setup Instructions
+# =============================================================================
+#
+# 1. Update system:
+#    sudo apt update && sudo apt upgrade -y
+#
+# 2. Install system dependencies:
+#    sudo apt install -y python3-pip python3-opencv python3-picamera2
+#
+# 3. Enable camera:
+#    sudo raspi-config -> Interface Options -> Camera -> Enable
+#    sudo reboot
+#
+# 4. Test camera:
+#    libcamera-hello --list-cameras
+#
+# 5. Install Python dependencies:
+#    pip3 install mediapipe numpy
+#
+# 6. For MediaPipe on Pi (if regular install fails):
+#    pip3 install mediapipe-rpi4
+#    # Or build from source if needed
+#
+# =============================================================================

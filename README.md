@@ -13,6 +13,11 @@ A real-time fall detection system designed for **Raspberry Pi** using a camera m
 - **Visual feedback** with status overlays and skeleton visualization
 - **Debug mode** showing detection metrics
 - **Optimized for Raspberry Pi** (Pi 3/4/5)
+- **Dataset evaluation** — test with pre-recorded images for offline validation
+- **Threshold tuning** — sweep detection parameters on labeled data
+
+> **Note:** This project is compatible with **Raspberry Pi OS based on Debian Trixie/Bookworm**.
+> Uses `rpicam-*` camera tools and auto-detected camera modules (no `raspi-config` camera enable needed).
 
 ---
 
@@ -80,7 +85,7 @@ The script will:
 
 - Raspberry Pi 3, 4, or 5 (Pi 4 with 4GB+ RAM recommended)
 - Raspberry Pi Camera Module (v1, v2, or v3) or USB webcam
-- Raspberry Pi OS (Bullseye or Bookworm, 64-bit recommended)
+- Raspberry Pi OS (Trixie or Bookworm, 64-bit recommended)
 - Internet connection for notifications
 - Monitor, keyboard, and mouse for initial setup (optional for headless)
 
@@ -92,37 +97,19 @@ Open a terminal and run:
 sudo apt update && sudo apt upgrade -y
 ```
 
-### Step 2: Enable the Camera Interface
+### Step 2: Verify Camera is Detected
 
-#### For Pi Camera Module:
+On **Trixie/Bookworm**, the camera is auto-detected — no enable step needed.
 
-**Option A: Using raspi-config (Recommended)**
 ```bash
-sudo raspi-config
-```
-Navigate to: `Interface Options` → `Camera` → `Enable` → `Finish` → Reboot
-
-**Option B: Using the desktop**
-Go to: `Preferences` → `Raspberry Pi Configuration` → `Interfaces` → Enable `Camera`
-
-Then reboot:
-```bash
-sudo reboot
+# List available cameras
+rpicam-hello --list-cameras
+# Should list your camera (e.g. imx219 for Camera Module v2)
 ```
 
-#### Verify Camera is Detected:
-
-For legacy camera stack:
-```bash
-vcgencmd get_camera
-# Should show: supported=1 detected=1
-```
-
-For libcamera (newer systems):
-```bash
-libcamera-hello --list-cameras
-# Should list your camera
-```
+> **Note:** On older Raspberry Pi OS (Bullseye), use `libcamera-hello --list-cameras` instead.
+> If your camera isn't detected, check the ribbon cable connection and try adding
+> `dtoverlay=imx219` to `/boot/firmware/config.txt`, then reboot.
 
 ### Step 3: Install System Dependencies
 
@@ -134,7 +121,7 @@ sudo apt install -y python3-pip python3-venv
 sudo apt install -y libopencv-dev python3-opencv
 
 # Install Pi Camera support (for Pi Camera Module)
-sudo apt install -y python3-picamera2 libcamera-apps
+sudo apt install -y python3-picamera2
 
 # Install additional libraries for MediaPipe
 sudo apt install -y libatlas-base-dev libhdf5-dev libharfbuzz-dev
@@ -214,7 +201,7 @@ python -m src.camera_stream
 **If it fails:**
 - Check camera connection
 - Try `--camera 1` if using USB webcam
-- Verify camera is enabled in raspi-config
+- Run `rpicam-hello --list-cameras` to verify camera is detected
 
 #### Test 2: Pose Estimation
 
@@ -254,6 +241,71 @@ python -m src.main
 - Status banner at top: "STANDING" (green) or "FALL DETECTED" (red)
 - Debug metrics in bottom-left (toggle with `d`)
 - Skeleton overlay on detected person
+
+---
+
+## Staged Testing (Recommended)
+
+The project includes stage-by-stage test scripts that validate each layer independently.
+Run them **in order** — each builds on the previous:
+
+```bash
+# Stage 0: Verify environment (tools, libraries, model file)
+python3 tests/stage0_env_check.py
+
+# Stage 1: Test camera capture (saves a test frame)
+python3 tests/stage1_camera.py
+
+# Stage 2: Load & verify dataset (download first)
+bash tests/download_dataset.sh
+python3 tests/stage2_dataset.py
+python3 tests/stage2_dataset.py --browse   # Interactive viewer
+
+# Stage 3: Test pose estimation
+python3 tests/stage3_pose.py --live        # On camera
+python3 tests/stage3_pose.py --dataset     # On dataset (with accuracy report)
+
+# Stage 4: Test fall detection
+python3 tests/stage4_fall_detection.py --live      # Act out falls
+python3 tests/stage4_fall_detection.py --dataset   # Precision/recall on dataset
+
+# Stage 5: Optimize thresholds
+python3 tests/stage5_tune.py               # Sweep thresholds
+python3 tests/stage5_tune.py --ml          # Also compare ML classifiers
+
+# Stage 6: Full pipeline integration
+python3 tests/stage6_full_pipeline.py --live   # With local test webhook
+```
+
+### Dataset Evaluation
+
+The system supports offline evaluation using labeled datasets. We use the
+**CCTV Incident Dataset** (111 synthetic images with COCO 17-keypoint skeleton
+annotations, CC BY-NC-SA 4.0).
+
+**Download:**
+```bash
+bash tests/download_dataset.sh
+```
+
+**Evaluate:**
+```bash
+# Run fall detection on all images, compare against ground truth
+python3 tests/stage4_fall_detection.py --dataset --visualize
+
+# Sweep thresholds to find optimal configuration
+python3 tests/stage5_tune.py
+
+# Compare an ML classifier against rule-based detection
+python3 tests/stage5_tune.py --ml
+```
+
+**Custom datasets:** Any directory of images (with optional YOLO Pose label files)
+or video file can be used:
+```bash
+python3 tests/stage3_pose.py --dataset --dataset-path /path/to/images
+python3 tests/stage4_fall_detection.py --dataset --dataset-path /path/to/video.mp4
+```
 
 ---
 
@@ -424,12 +476,23 @@ VisioNull/
 ├── src/
 │   ├── __init__.py          # Package initialization
 │   ├── camera_stream.py     # Camera capture module (picamera2 + OpenCV)
+│   ├── dataset_stream.py    # Dataset/video frame source for offline eval
 │   ├── pose_estimator.py    # MediaPipe Pose wrapper
 │   ├── fall_detector.py     # Rule-based fall detection
 │   ├── config.py            # Configuration settings
 │   ├── notifier.py          # Webhook notification system
 │   ├── main.py              # Main application (with display)
 │   └── main_pi.py           # Headless Pi application (production)
+├── tests/
+│   ├── stage0_env_check.py  # Environment verification
+│   ├── stage1_camera.py     # Camera capture test
+│   ├── stage2_dataset.py    # Dataset loading test
+│   ├── stage3_pose.py       # Pose estimation test
+│   ├── stage4_fall_detection.py  # Fall detection test
+│   ├── stage5_tune.py       # Threshold tuning
+│   ├── stage6_full_pipeline.py   # Full integration test
+│   └── download_dataset.sh  # Dataset download script
+├── data/                     # Datasets (gitignored)
 ├── requirements.txt          # Python dependencies
 ├── setup_pi.sh               # Automated setup script
 ├── visionull.service         # Systemd service file
@@ -442,6 +505,7 @@ VisioNull/
 | Module | Purpose |
 |--------|---------|
 | `camera_stream.py` | Camera capture with picamera2 (Pi Camera) or OpenCV fallback (USB webcam). Auto-reconnect support. |
+| `dataset_stream.py` | Loads frames from image directories or video files for offline evaluation. Parses YOLO Pose annotations. |
 | `pose_estimator.py` | Wraps MediaPipe Pose Landmarker. Extracts 33 body landmarks in pixel coordinates. |
 | `fall_detector.py` | Rule-based state machine with post-fall validation. Analyzes pose landmarks to detect falls. |
 | `config.py` | Central configuration file. Customize thresholds, camera settings, webhook URL, and more. |
@@ -457,17 +521,28 @@ VisioNull/
 
 1. **Check if camera is detected:**
    ```bash
+   rpicam-hello --list-cameras
+   # Should list your camera model (e.g. imx219)
+   ```
+
+2. **Check device nodes:**
+   ```bash
    ls /dev/video*
    # Should show /dev/video0 or similar
    ```
 
-2. **For Pi Camera with libcamera:**
+3. **Quick preview test:**
    ```bash
-   # Test with libcamera
-   libcamera-hello
+   rpicam-hello -t 5000
+   # Shows a 5-second preview window
    ```
 
-3. **Try different camera index:**
+4. **If camera not detected:**
+   - Check ribbon cable is firmly seated in the CSI connector
+   - Try adding `dtoverlay=imx219` to `/boot/firmware/config.txt` and reboot
+   - Ensure no other process is using the camera
+
+5. **Try different camera index (USB webcam):**
    ```bash
    python -m src.camera_stream --camera 1
    ```

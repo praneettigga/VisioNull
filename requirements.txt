@@ -47,18 +47,18 @@ numpy>=1.21.0
 # 2. Install system dependencies:
 #    sudo apt install -y python3-pip python3-opencv python3-picamera2
 #
-# 3. Enable camera:
-#    sudo raspi-config -> Interface Options -> Camera -> Enable
-#    sudo reboot
+# 3. Verify camera is detected (Trixie/Bookworm):
+#    rpicam-hello --list-cameras
+#    (On Bullseye: libcamera-hello --list-cameras)
 #
-# 4. Test camera:
-#    libcamera-hello --list-cameras
-#
-# 5. Install Python dependencies:
+# 4. Install Python dependencies:
 #    pip3 install mediapipe numpy
 #
-# 6. For MediaPipe on Pi (if regular install fails):
+# 5. For MediaPipe on Pi (if regular install fails):
 #    pip3 install mediapipe-rpi4
 #    # Or build from source if needed
+#
+# 6. Optional (for threshold tuning — Stage 5):
+#    pip3 install scikit-learn
 #
 # =============================================================================

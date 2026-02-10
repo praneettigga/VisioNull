@@ -549,10 +549,12 @@ def main():
     
     if not camera.start():
         print("Failed to start camera. Please check:")
-        print("  1. Camera is properly connected")
-        print("  2. Camera interface is enabled (raspi-config)")
+        print("  1. Camera ribbon cable is properly connected")
+        print("  2. Camera is detected: rpicam-hello --list-cameras")
         print("  3. No other application is using the camera")
         print("  4. For Pi Camera: sudo apt install python3-picamera2")
+        print("  5. If camera not detected, try adding dtoverlay=imx219")
+        print("     to /boot/firmware/config.txt and reboot")
         return
     
     try:

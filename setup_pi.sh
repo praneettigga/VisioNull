@@ -1,5 +1,6 @@
 #!/bin/bash
 # VisioNull Fall Detection System - Raspberry Pi Setup Script
+# Compatible with Raspberry Pi OS based on Debian Trixie / Bookworm
 # Run this script on your Raspberry Pi to set up the fall detection system
 
 set -e  # Exit on error
@@ -14,7 +15,43 @@ echo ""
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+# Detect OS version and set appropriate commands
+detect_os() {
+    echo "Detecting OS version..."
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS_VERSION_CODENAME="${VERSION_CODENAME:-unknown}"
+        OS_PRETTY_NAME="${PRETTY_NAME:-unknown}"
+    else
+        OS_VERSION_CODENAME="unknown"
+        OS_PRETTY_NAME="unknown"
+    fi
+
+    echo -e "${CYAN}OS: $OS_PRETTY_NAME ($OS_VERSION_CODENAME)${NC}"
+
+    # Determine camera CLI tool prefix
+    # Trixie and Bookworm use rpicam-*, older use libcamera-*
+    case "$OS_VERSION_CODENAME" in
+        trixie|bookworm)
+            CAM_PREFIX="rpicam"
+            CAM_APPS_PKG="rpicam-apps"
+            echo -e "${GREEN}Using rpicam-* camera tools (modern)${NC}"
+            ;;
+        bullseye)
+            CAM_PREFIX="libcamera"
+            CAM_APPS_PKG="libcamera-apps"
+            echo -e "${YELLOW}Using libcamera-* camera tools (Bullseye)${NC}"
+            ;;
+        *)
+            CAM_PREFIX="rpicam"
+            CAM_APPS_PKG="rpicam-apps"
+            echo -e "${YELLOW}Unknown OS version, assuming rpicam-* tools${NC}"
+            ;;
+    esac
+}
 
 # Check if running on Raspberry Pi
 check_pi() {
@@ -44,16 +81,31 @@ update_system() {
 install_dependencies() {
     echo ""
     echo "Step 2: Installing system dependencies..."
-    sudo apt install -y \
-        python3-pip \
-        python3-opencv \
-        python3-picamera2 \
-        python3-numpy \
-        libcamera-apps \
-        libatlas-base-dev \
-        libjasper-dev \
-        libqtgui4 \
-        libqt4-test
+
+    # Core packages (available on all versions)
+    PACKAGES=(
+        python3-pip
+        python3-opencv
+        python3-numpy
+        libatlas-base-dev
+    )
+
+    # Camera packages (from Raspberry Pi apt repos)
+    PACKAGES+=(python3-picamera2)
+
+    # rpicam-apps or libcamera-apps (may already be pre-installed)
+    if apt-cache show "$CAM_APPS_PKG" &>/dev/null; then
+        PACKAGES+=("$CAM_APPS_PKG")
+    else
+        echo -e "${YELLOW}Note: $CAM_APPS_PKG not found in apt cache (may be pre-installed)${NC}"
+    fi
+
+    sudo apt install -y "${PACKAGES[@]}" || {
+        echo -e "${YELLOW}Some packages may have failed. Retrying core packages...${NC}"
+        sudo apt install -y python3-pip python3-opencv python3-numpy libatlas-base-dev
+        sudo apt install -y python3-picamera2 || echo -e "${YELLOW}python3-picamera2 not available via apt, will try pip later${NC}"
+    }
+
     echo -e "${GREEN}✓ System dependencies installed${NC}"
 }
 
@@ -61,20 +113,39 @@ install_dependencies() {
 check_camera() {
     echo ""
     echo "Step 3: Checking camera..."
-    
+
+    CAM_HELLO="${CAM_PREFIX}-hello"
+
+    # Check if camera tool exists
+    if ! command -v "$CAM_HELLO" &>/dev/null; then
+        echo -e "${YELLOW}Warning: $CAM_HELLO not found in PATH${NC}"
+        echo "Camera CLI tools may not be installed."
+        echo "Try: sudo apt install $CAM_APPS_PKG"
+        read -p "Continue anyway? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+        return
+    fi
+
     # Check if camera is detected
-    if libcamera-hello --list-cameras 2>/dev/null | grep -q "Available cameras"; then
+    if $CAM_HELLO --list-cameras 2>/dev/null | grep -q -i "available\|imx\|ov5647\|camera"; then
         echo -e "${GREEN}✓ Camera detected${NC}"
-        libcamera-hello --list-cameras
+        $CAM_HELLO --list-cameras
     else
         echo -e "${YELLOW}Warning: No camera detected${NC}"
         echo "Please ensure:"
         echo "  1. Camera ribbon cable is properly connected"
-        echo "  2. Camera is enabled in raspi-config"
+        echo "  2. Camera is seated correctly in the CSI connector"
         echo ""
-        echo "To enable camera:"
-        echo "  sudo raspi-config -> Interface Options -> Camera -> Enable"
-        echo "  sudo reboot"
+        echo "On Trixie/Bookworm, the camera is auto-detected (no raspi-config step needed)."
+        echo ""
+        echo "To verify manually:"
+        echo "  $CAM_HELLO --list-cameras"
+        echo ""
+        echo "If using a non-standard camera, add a dtoverlay to /boot/firmware/config.txt:"
+        echo "  dtoverlay=imx219"
         echo ""
         read -p "Continue anyway? (y/n) " -n 1 -r
         echo
@@ -88,11 +159,10 @@ check_camera() {
 install_python_deps() {
     echo ""
     echo "Step 4: Installing Python dependencies..."
-    
-    # Install mediapipe (may take a while on Pi)
+
     echo "Installing MediaPipe (this may take several minutes)..."
     pip3 install --upgrade pip
-    
+
     # Try regular mediapipe first, fall back to rpi4 version
     if pip3 install mediapipe 2>/dev/null; then
         echo -e "${GREEN}✓ MediaPipe installed${NC}"
@@ -104,7 +174,10 @@ install_python_deps() {
             echo "https://google.github.io/mediapipe/getting_started/install.html"
         }
     fi
-    
+
+    # Install scikit-learn for threshold tuning (optional)
+    pip3 install scikit-learn 2>/dev/null || echo -e "${YELLOW}scikit-learn not installed (optional, for threshold tuning)${NC}"
+
     echo -e "${GREEN}✓ Python dependencies installed${NC}"
 }
 
@@ -112,12 +185,13 @@ install_python_deps() {
 create_directories() {
     echo ""
     echo "Step 5: Creating directories..."
-    
+
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    
+
     mkdir -p "$SCRIPT_DIR/logs"
     mkdir -p "$SCRIPT_DIR/data"
-    
+    mkdir -p "$SCRIPT_DIR/tests"
+
     echo -e "${GREEN}✓ Directories created${NC}"
 }
 
@@ -125,11 +199,11 @@ create_directories() {
 download_model() {
     echo ""
     echo "Step 6: Downloading pose estimation model..."
-    
+
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     MODEL_PATH="$SCRIPT_DIR/pose_landmarker_lite.task"
     MODEL_URL="https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
-    
+
     if [ -f "$MODEL_PATH" ]; then
         echo "Model already exists, skipping download"
     else
@@ -138,7 +212,7 @@ download_model() {
             echo "The model will be downloaded automatically on first run"
         }
     fi
-    
+
     echo -e "${GREEN}✓ Model ready${NC}"
 }
 
@@ -146,19 +220,17 @@ download_model() {
 setup_service() {
     echo ""
     echo "Step 7: Setting up systemd service..."
-    
+
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     SERVICE_FILE="$SCRIPT_DIR/visionull.service"
-    
-    # Update service file with correct paths
+
     CURRENT_USER=$(whoami)
     sed -i "s|User=pi|User=$CURRENT_USER|g" "$SERVICE_FILE"
     sed -i "s|/home/pi/VisioNull|$SCRIPT_DIR|g" "$SERVICE_FILE"
-    
-    # Install service
+
     sudo cp "$SERVICE_FILE" /etc/systemd/system/
     sudo systemctl daemon-reload
-    
+
     echo -e "${GREEN}✓ Service installed${NC}"
     echo ""
     echo "To enable auto-start on boot:"
@@ -166,21 +238,17 @@ setup_service() {
     echo ""
     echo "To start the service:"
     echo "  sudo systemctl start visionull"
-    echo ""
-    echo "To check status:"
-    echo "  sudo systemctl status visionull"
 }
 
 # Test the system
 test_system() {
     echo ""
     echo "Step 8: Testing the system..."
-    
+
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    
-    echo "Running quick camera test..."
     cd "$SCRIPT_DIR"
-    
+
+    echo "Running quick camera test..."
     python3 -c "
 from src.camera_stream import CameraStream, PICAMERA2_AVAILABLE
 print(f'picamera2 available: {PICAMERA2_AVAILABLE}')
@@ -194,17 +262,15 @@ if camera.start():
 else:
     print('Camera test: FAILED')
 " && echo -e "${GREEN}✓ Camera test passed${NC}" || echo -e "${YELLOW}Camera test failed${NC}"
-    
+
     echo ""
     echo "Running quick pose estimation test..."
     python3 -c "
 from src.pose_estimator import PoseEstimator
 import numpy as np
 pose = PoseEstimator()
-# Create a dummy frame
 frame = np.zeros((480, 640, 3), dtype=np.uint8)
-landmarks = pose.process_frame(frame)
-print(f'Pose estimator initialized: SUCCESS')
+print('Pose estimator initialized: SUCCESS')
 " && echo -e "${GREEN}✓ Pose estimation test passed${NC}" || echo -e "${YELLOW}Pose estimation test failed${NC}"
 }
 
@@ -220,27 +286,26 @@ print_instructions() {
     echo "  2. Set WEBHOOK_URL to your notification endpoint"
     echo "  3. Set DEVICE_NAME to identify this device"
     echo ""
-    echo "To test the webhook, you can use webhook.site:"
-    echo "  1. Go to https://webhook.site"
-    echo "  2. Copy your unique URL"
-    echo "  3. Paste it in src/config.py as WEBHOOK_URL"
+    echo "Stage-by-stage validation:"
+    echo "  python3 tests/stage0_env_check.py"
+    echo "  python3 tests/stage1_camera.py"
+    echo "  python3 tests/stage2_dataset.py"
+    echo "  python3 tests/stage3_pose.py --live"
+    echo "  python3 tests/stage4_fall_detection.py --live"
     echo ""
     echo "To run manually:"
     echo "  python3 -m src.main_pi"
     echo ""
     echo "To run as a service:"
     echo "  sudo systemctl start visionull"
-    echo "  sudo systemctl enable visionull  # auto-start on boot"
-    echo ""
-    echo "To view logs:"
-    echo "  tail -f logs/system.log"
-    echo "  tail -f logs/falls.log"
+    echo "  sudo systemctl enable visionull"
     echo ""
     echo "=============================================="
 }
 
 # Main installation flow
 main() {
+    detect_os
     check_pi
     update_system
     install_dependencies
@@ -253,5 +318,4 @@ main() {
     print_instructions
 }
 
-# Run main function
 main

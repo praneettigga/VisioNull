@@ -254,7 +254,8 @@ class FallDetector:
     def update(
         self,
         landmarks: Optional[List[Landmark]],
-        frame_height: int = 480
+        frame_height: int = 480,
+        timestamp: Optional[float] = None
     ) -> Tuple[FallState, FallMetrics]:
         """
         Update fall detection state with new landmarks.
@@ -262,6 +263,9 @@ class FallDetector:
         Args:
             landmarks: List of pose landmarks, or None if no person detected
             frame_height: Height of the video frame in pixels
+            timestamp: Optional timestamp (seconds). If None, uses time.time().
+                      Provide this for offline/dataset evaluation to decouple
+                      from wall-clock time.
             
         Returns:
             Tuple of (current_state, debug_metrics)
@@ -348,7 +352,7 @@ class FallDetector:
             (is_on_ground and head_height_ratio > 0.40)  # New: sitting/crawling with head below 40% of frame
         )
         
-        current_time = time.time()
+        current_time = timestamp if timestamp is not None else time.time()
         
         if is_fall_position:
             # Potential fall condition

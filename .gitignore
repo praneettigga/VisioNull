@@ -30,3 +30,14 @@ Thumbs.db
 # Local config
 .env
 .env.local
+
+# Dataset files (large, download separately)
+data/cctv-incident/
+data/*.zip
+
+# Test outputs
+tests/test_frame.jpg
+tests/tuning_results.csv
+
+# Backup files
+*.bak

@@ -13,6 +13,11 @@ A real-time fall detection system designed for **Raspberry Pi** using a camera m
 - **Visual feedback** with status overlays and skeleton visualization
 - **Debug mode** showing detection metrics
 - **Optimized for Raspberry Pi** (Pi 3/4/5)
+- **Dataset evaluation** — test with pre-recorded images for offline validation
+- **Threshold tuning** — sweep detection parameters on labeled data
+
+> **Note:** This project is compatible with **Raspberry Pi OS based on Debian Trixie/Bookworm**.
+> Uses `rpicam-*` camera tools and auto-detected camera modules (no `raspi-config` camera enable needed).
 
 ---
 
@@ -45,21 +50,44 @@ The system uses a **rule-based approach** analyzing body pose landmarks from Med
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `fall_head_threshold` | 0.65 | Head Y position ratio to consider "low" |
-| `horizontal_ratio_threshold` | 0.8 | Body width/height ratio for "horizontal" |
-| `fall_confirm_frames` | 8 | Frames to confirm a fall |
-| `head_velocity_threshold` | 15.0 | Pixels/frame for "falling motion" |
+| `fall_head_threshold` | 0.55 | Head Y position ratio to consider "low" |
+| `horizontal_ratio_threshold` | 0.6 | Body width/height ratio for "horizontal" |
+| `fall_confirm_frames` | 6 | Frames to confirm a fall |
+| `head_velocity_threshold` | 10.0 | Pixels/frame for "falling motion" |
+| `post_fall_validation_seconds` | 2.0 | Seconds person must stay down after detection |
 
 ---
 
 ## Raspberry Pi Setup Instructions
 
-### Prerequisites
+### Quick Setup (Recommended)
 
-- Raspberry Pi 3, 4, or 5
+For automated installation, use the provided setup script:
+
+```bash
+cd ~/VisioNull
+chmod +x setup_pi.sh
+./setup_pi.sh
+```
+
+The script will:
+- Update system packages
+- Install dependencies (OpenCV, MediaPipe, picamera2)
+- Enable camera interface
+- Download pose estimation model
+- Create required directories
+- Install systemd service for auto-start
+- Run system tests
+
+### Manual Setup
+
+#### Prerequisites
+
+- Raspberry Pi 3, 4, or 5 (Pi 4 with 4GB+ RAM recommended)
 - Raspberry Pi Camera Module (v1, v2, or v3) or USB webcam
-- Raspberry Pi OS (Bullseye or newer recommended)
-- Monitor, keyboard, and mouse for initial setup
+- Raspberry Pi OS (Trixie or Bookworm, 64-bit recommended)
+- Internet connection for notifications
+- Monitor, keyboard, and mouse for initial setup (optional for headless)
 
 ### Step 1: Update Your System
 
@@ -69,37 +97,19 @@ Open a terminal and run:
 sudo apt update && sudo apt upgrade -y
 ```
 
-### Step 2: Enable the Camera Interface
+### Step 2: Verify Camera is Detected
 
-#### For Pi Camera Module:
+On **Trixie/Bookworm**, the camera is auto-detected — no enable step needed.
 
-**Option A: Using raspi-config (Recommended)**
 ```bash
-sudo raspi-config
-```
-Navigate to: `Interface Options` → `Camera` → `Enable` → `Finish` → Reboot
-
-**Option B: Using the desktop**
-Go to: `Preferences` → `Raspberry Pi Configuration` → `Interfaces` → Enable `Camera`
-
-Then reboot:
-```bash
-sudo reboot
+# List available cameras
+rpicam-hello --list-cameras
+# Should list your camera (e.g. imx219 for Camera Module v2)
 ```
 
-#### Verify Camera is Detected:
-
-For legacy camera stack:
-```bash
-vcgencmd get_camera
-# Should show: supported=1 detected=1
-```
-
-For libcamera (newer systems):
-```bash
-libcamera-hello --list-cameras
-# Should list your camera
-```
+> **Note:** On older Raspberry Pi OS (Bullseye), use `libcamera-hello --list-cameras` instead.
+> If your camera isn't detected, check the ribbon cable connection and try adding
+> `dtoverlay=imx219` to `/boot/firmware/config.txt`, then reboot.
 
 ### Step 3: Install System Dependencies
 
@@ -109,6 +119,9 @@ sudo apt install -y python3-pip python3-venv
 
 # Install OpenCV system dependencies
 sudo apt install -y libopencv-dev python3-opencv
+
+# Install Pi Camera support (for Pi Camera Module)
+sudo apt install -y python3-picamera2
 
 # Install additional libraries for MediaPipe
 sudo apt install -y libatlas-base-dev libhdf5-dev libharfbuzz-dev
@@ -188,7 +201,7 @@ python -m src.camera_stream
 **If it fails:**
 - Check camera connection
 - Try `--camera 1` if using USB webcam
-- Verify camera is enabled in raspi-config
+- Run `rpicam-hello --list-cameras` to verify camera is detected
 
 #### Test 2: Pose Estimation
 
@@ -231,9 +244,178 @@ python -m src.main
 
 ---
 
+## Staged Testing (Recommended)
+
+The project includes stage-by-stage test scripts that validate each layer independently.
+Run them **in order** — each builds on the previous:
+
+```bash
+# Stage 0: Verify environment (tools, libraries, model file)
+python3 tests/stage0_env_check.py
+
+# Stage 1: Test camera capture (saves a test frame)
+python3 tests/stage1_camera.py
+
+# Stage 2: Load & verify dataset (download first)
+bash tests/download_dataset.sh
+python3 tests/stage2_dataset.py
+python3 tests/stage2_dataset.py --browse   # Interactive viewer
+
+# Stage 3: Test pose estimation
+python3 tests/stage3_pose.py --live        # On camera
+python3 tests/stage3_pose.py --dataset     # On dataset (with accuracy report)
+
+# Stage 4: Test fall detection
+python3 tests/stage4_fall_detection.py --live      # Act out falls
+python3 tests/stage4_fall_detection.py --dataset   # Precision/recall on dataset
+
+# Stage 5: Optimize thresholds
+python3 tests/stage5_tune.py               # Sweep thresholds
+python3 tests/stage5_tune.py --ml          # Also compare ML classifiers
+
+# Stage 6: Full pipeline integration
+python3 tests/stage6_full_pipeline.py --live   # With local test webhook
+```
+
+### Dataset Evaluation
+
+The system supports offline evaluation using labeled datasets. We use the
+**CCTV Incident Dataset** (111 synthetic images with COCO 17-keypoint skeleton
+annotations, CC BY-NC-SA 4.0).
+
+**Download:**
+```bash
+bash tests/download_dataset.sh
+```
+
+**Evaluate:**
+```bash
+# Run fall detection on all images, compare against ground truth
+python3 tests/stage4_fall_detection.py --dataset --visualize
+
+# Sweep thresholds to find optimal configuration
+python3 tests/stage5_tune.py
+
+# Compare an ML classifier against rule-based detection
+python3 tests/stage5_tune.py --ml
+```
+
+**Custom datasets:** Any directory of images (with optional YOLO Pose label files)
+or video file can be used:
+```bash
+python3 tests/stage3_pose.py --dataset --dataset-path /path/to/images
+python3 tests/stage4_fall_detection.py --dataset --dataset-path /path/to/video.mp4
+```
+
+---
+
+## Production Deployment (Raspberry Pi)
+
+### Configuration
+
+Before running in production, configure the system by editing [src/config.py](src/config.py):
+
+```python
+# Device identification
+DEVICE_NAME = "living-room-pi"  # Unique name for this device
+DEVICE_LOCATION = "Living Room"  # Human-readable location
+
+# Webhook URL for fall notifications (REQUIRED)
+WEBHOOK_URL = "https://your-server.com/fall-alert"
+# Test URL: https://webhook.site/your-unique-id
+
+# Camera settings
+FRAME_WIDTH = 1280   # Higher resolution = better accuracy
+FRAME_HEIGHT = 720
+TARGET_FPS = 15      # Pi 4 can handle 15-20 FPS
+
+# Fall detection sensitivity
+FALL_HEAD_THRESHOLD = 0.55           # Lower = more sensitive
+HORIZONTAL_RATIO_THRESHOLD = 0.6    # Lower = easier to detect horizontal
+FALL_CONFIRM_FRAMES = 6              # Fewer = faster detection
+POST_FALL_VALIDATION_SECONDS = 2.0   # Person must stay down this long
+FALL_CONFIDENCE_THRESHOLD = 0.7      # Minimum confidence to notify
+
+# Notification settings
+NOTIFICATION_COOLDOWN_SECONDS = 30   # Prevent spam
+ENABLE_OFFLINE_QUEUE = True          # Queue notifications when offline
+```
+
+#### Webhook Setup
+
+The system sends HTTP POST requests with JSON payload:
+
+```json
+{
+  "timestamp": "2026-02-09T14:30:45",
+  "device_name": "living-room-pi",
+  "device_location": "Living Room",
+  "message": "Fall detected!",
+  "fall_confidence": 0.85,
+  "event_id": "living-room-pi-20260209143045-0001"
+}
+```
+
+**Webhook examples:**
+- **Testing**: [webhook.site](https://webhook.site) - Get a free test URL
+- **IFTTT**: `https://maker.ifttt.com/trigger/fall_detected/with/key/YOUR_KEY`
+- **Home Assistant**: `https://your-ha.com/api/webhook/fall_alert`
+- **Custom server**: Your own API endpoint
+
+### Running in Headless Mode
+
+For production deployment without a display:
+
+```bash
+# Activate virtual environment
+source ~/VisioNull/venv/bin/activate
+
+# Run headless application
+python -m src.main_pi
+```
+
+The headless application:
+- Runs without GUI/display
+- Sends webhook notifications on fall detection
+- Logs to `logs/system.log` and `logs/falls.log`
+- Auto-recovers from camera failures
+- Handles graceful shutdown (Ctrl+C)
+
+### Running as a System Service
+
+For auto-start on boot:
+
+```bash
+# Enable and start the service
+sudo systemctl enable visionull
+sudo systemctl start visionull
+
+# Check status
+sudo systemctl status visionull
+
+# View logs
+sudo journalctl -u visionull -f
+# Or
+tail -f ~/VisioNull/logs/system.log
+
+# Stop service
+sudo systemctl stop visionull
+
+# Disable auto-start
+sudo systemctl disable visionull
+```
+
+**Service features:**
+- Starts automatically on boot
+- Restarts on failure
+- Runs as your user (access to camera)
+- Logs to `logs/system.log` and `logs/error.log`
+
+---
+
 ## Usage
 
-### Running the Application
+### Running the Desktop Application (with Display)
 
 ```bash
 # Activate virtual environment (if not already active)
@@ -262,6 +444,7 @@ python -m src.main --no-debug
 
 ### Command Line Options
 
+**Desktop application (main.py):**
 ```
 usage: main.py [-h] [--camera CAMERA] [--width WIDTH] [--height HEIGHT] [--no-debug]
 
@@ -276,6 +459,14 @@ optional arguments:
   --no-debug            Hide debug metrics overlay
 ```
 
+**Headless application (main_pi.py):**
+```
+# Configuration via src/config.py or environment variables:
+export VISIONULL_WEBHOOK_URL="https://your-webhook.com/endpoint"
+export VISIONULL_DEVICE_NAME="my-device"
+python -m src.main_pi
+```
+
 ---
 
 ## Project Structure
@@ -284,11 +475,28 @@ optional arguments:
 VisioNull/
 ├── src/
 │   ├── __init__.py          # Package initialization
-│   ├── camera_stream.py     # Camera capture module
+│   ├── camera_stream.py     # Camera capture module (picamera2 + OpenCV)
+│   ├── dataset_stream.py    # Dataset/video frame source for offline eval
 │   ├── pose_estimator.py    # MediaPipe Pose wrapper
 │   ├── fall_detector.py     # Rule-based fall detection
-│   └── main.py              # Main application
+│   ├── config.py            # Configuration settings
+│   ├── notifier.py          # Webhook notification system
+│   ├── main.py              # Main application (with display)
+│   └── main_pi.py           # Headless Pi application (production)
+├── tests/
+│   ├── stage0_env_check.py  # Environment verification
+│   ├── stage1_camera.py     # Camera capture test
+│   ├── stage2_dataset.py    # Dataset loading test
+│   ├── stage3_pose.py       # Pose estimation test
+│   ├── stage4_fall_detection.py  # Fall detection test
+│   ├── stage5_tune.py       # Threshold tuning
+│   ├── stage6_full_pipeline.py   # Full integration test
+│   └── download_dataset.sh  # Dataset download script
+├── data/                     # Datasets (gitignored)
 ├── requirements.txt          # Python dependencies
+├── setup_pi.sh               # Automated setup script
+├── visionull.service         # Systemd service file
+├── pose_landmarker_lite.task # MediaPipe pose model
 └── README.md                 # This file
 ```
 
@@ -296,10 +504,14 @@ VisioNull/
 
 | Module | Purpose |
 |--------|---------|
-| `camera_stream.py` | Handles camera capture with OpenCV. Provides frame generator and clean shutdown. |
-| `pose_estimator.py` | Wraps MediaPipe Pose. Extracts 33 body landmarks in pixel coordinates. |
-| `fall_detector.py` | Rule-based state machine analyzing pose landmarks to detect falls. |
-| `main.py` | Integrates all modules. Handles display, overlays, and user input. |
+| `camera_stream.py` | Camera capture with picamera2 (Pi Camera) or OpenCV fallback (USB webcam). Auto-reconnect support. |
+| `dataset_stream.py` | Loads frames from image directories or video files for offline evaluation. Parses YOLO Pose annotations. |
+| `pose_estimator.py` | Wraps MediaPipe Pose Landmarker. Extracts 33 body landmarks in pixel coordinates. |
+| `fall_detector.py` | Rule-based state machine with post-fall validation. Analyzes pose landmarks to detect falls. |
+| `config.py` | Central configuration file. Customize thresholds, camera settings, webhook URL, and more. |
+| `notifier.py` | HTTP webhook notification system with offline queue, retry logic, and cooldown. |
+| `main.py` | Desktop application with GUI. Displays video feed with overlays and debug metrics. |
+| `main_pi.py` | **Production entry point for Raspberry Pi.** Headless mode with webhook notifications. |
 
 ---
 
@@ -309,17 +521,28 @@ VisioNull/
 
 1. **Check if camera is detected:**
    ```bash
+   rpicam-hello --list-cameras
+   # Should list your camera model (e.g. imx219)
+   ```
+
+2. **Check device nodes:**
+   ```bash
    ls /dev/video*
    # Should show /dev/video0 or similar
    ```
 
-2. **For Pi Camera with libcamera:**
+3. **Quick preview test:**
    ```bash
-   # Test with libcamera
-   libcamera-hello
+   rpicam-hello -t 5000
+   # Shows a 5-second preview window
    ```
 
-3. **Try different camera index:**
+4. **If camera not detected:**
+   - Check ribbon cable is firmly seated in the CSI connector
+   - Try adding `dtoverlay=imx219` to `/boot/firmware/config.txt` and reboot
+   - Ensure no other process is using the camera
+
+5. **Try different camera index (USB webcam):**
    ```bash
    python -m src.camera_stream --camera 1
    ```
@@ -349,31 +572,65 @@ VisioNull/
 
 ### False Positives/Negatives
 
-Tune the detection thresholds in `fall_detector.py`:
+Tune the detection thresholds in [src/config.py](src/config.py):
 
 ```python
-self.fall_detector = FallDetector(
-    fall_head_threshold=0.70,      # Increase to require head lower
-    horizontal_ratio_threshold=1.0, # Increase for stricter horizontal detection
-    fall_confirm_frames=10          # Increase for fewer false positives
-)
+# More sensitive (detects falls easier, more false positives)
+FALL_HEAD_THRESHOLD = 0.50
+HORIZONTAL_RATIO_THRESHOLD = 0.5
+FALL_CONFIRM_FRAMES = 4
+POST_FALL_VALIDATION_SECONDS = 1.0
+
+# Less sensitive (fewer false positives, may miss some falls)
+FALL_HEAD_THRESHOLD = 0.65
+HORIZONTAL_RATIO_THRESHOLD = 0.8
+FALL_CONFIRM_FRAMES = 10
+POST_FALL_VALIDATION_SECONDS = 3.0
+
+# Balanced (default)
+FALL_HEAD_THRESHOLD = 0.55
+HORIZONTAL_RATIO_THRESHOLD = 0.6
+FALL_CONFIRM_FRAMES = 6
+POST_FALL_VALIDATION_SECONDS = 2.0
 ```
 
 ---
 
 ## Extending the Project
 
-### Adding Alerts
+### Custom Notifications
 
-To add audio/visual alerts when a fall is detected, modify `main.py`:
+The webhook system ([src/notifier.py](src/notifier.py)) makes it easy to integrate with any service:
+
+**1. SMS via Twilio:**
+```python
+# Add to notifier.py
+import twilio
+# Send SMS when webhook is called
+```
+
+**2. Email via SMTP:**
+```python
+import smtplib
+# Send email notification
+```
+
+**3. Smart Home Integration:**
+- **Home Assistant**: Use webhook automation
+- **IFTTT**: Use Webhooks service
+- **Pushover/Pushbullet**: For mobile notifications
+
+**4. Local Alerts:**
+
+To add audio/visual alerts, modify [src/main_pi.py](src/main_pi.py):
 
 ```python
-# In the main loop, after state detection:
+# In the main loop, after fall detection:
 if state == FallState.FALLEN:
     # Play sound
-    os.system('aplay alert.wav &')
-    # Or send notification
-    # send_sms_alert()
+    os.system('aplay /usr/share/sounds/alert.wav &')
+    # Flash LED on GPIO
+    # GPIO.output(LED_PIN, GPIO.HIGH)
 ```
 
 ### Network Streaming

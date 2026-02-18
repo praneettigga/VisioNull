@@ -1,0 +1,27 @@
+[Unit]
+Description=VisioNull Fall Detection System
+Documentation=https://github.com/your-repo/visionull
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/VisioNull
+ExecStart=/usr/bin/python3 -m src.main_pi
+Restart=always
+RestartSec=10
+
+# Environment variables (optional overrides)
+# Environment=VISIONULL_WEBHOOK_URL=https://your-webhook-url.com/endpoint
+# Environment=VISIONULL_DEVICE_NAME=living-room-pi
+
+# Logging
+StandardOutput=append:/home/pi/VisioNull/logs/system.log
+StandardError=append:/home/pi/VisioNull/logs/error.log
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

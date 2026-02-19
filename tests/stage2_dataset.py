@@ -6,7 +6,7 @@ ground-truth annotations (bounding boxes + COCO 17-keypoint skeletons) parse pro
 
 Usage:
     python3 tests/stage2_dataset.py
-    python3 tests/stage2_dataset.py --path data/cctv-incident/images
+    python3 tests/stage2_dataset.py --path data/laying_dataset/images
     python3 tests/stage2_dataset.py --browse   # Interactive viewer
 """
 
@@ -218,6 +218,7 @@ def main():
     if source_path is None:
         # Try to find the dataset in the standard location
         candidates = [
+            os.path.join(PROJECT_ROOT, "data", "laying_dataset", "images"),
             os.path.join(PROJECT_ROOT, "data", "cctv-incident", "images"),
             os.path.join(PROJECT_ROOT, "data", "cctv-incident", "train", "images"),
             os.path.join(PROJECT_ROOT, "data", "cctv-incident"),

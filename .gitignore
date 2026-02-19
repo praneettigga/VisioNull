@@ -33,7 +33,9 @@ Thumbs.db
 
 # Dataset files (large, download separately)
 data/cctv-incident/
+data/laying_dataset/
 data/*.zip
+data/*.tar.gz
 
 # Test outputs
 tests/test_frame.jpg

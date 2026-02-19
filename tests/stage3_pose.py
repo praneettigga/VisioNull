@@ -276,6 +276,7 @@ def main():
         source = args.dataset_path
         if source is None:
             candidates = [
+                os.path.join(PROJECT_ROOT, "data", "laying_dataset", "images"),
                 os.path.join(PROJECT_ROOT, "data", "cctv-incident", "images"),
                 os.path.join(PROJECT_ROOT, "data", "cctv-incident", "train", "images"),
                 os.path.join(PROJECT_ROOT, "data", "cctv-incident"),

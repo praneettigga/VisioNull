@@ -35,7 +35,7 @@ sudo apt install python3-pip python3-dev
 sudo apt install -y libopencv-dev
 
 # Install additional libraries for MediaPipe
-sudo apt install -y libgl1-mesa-glx libglib2.0-0
+sudo apt install -y libgl1 libglib2.0-0
 ```
 
 > **Note:** If you encountered the `ensurepip is not available` error, the `python3-venv` package fixes it.
@@ -109,23 +109,53 @@ bash tests/download_dataset.sh
 
 ### Option 2: Manual Download
 
-If Kaggle CLI doesn't work:
+If you don't have Kaggle credentials or prefer manual download:
+
+**Step 1: Create/Login to Kaggle Account**
+1. Go to https://www.kaggle.com
+2. Sign up or log in to your account
+3. (If new account) Verify your phone number (required for downloads)
+
+**Step 2: Download the Dataset**
+1. Visit the dataset page:
+   - https://www.kaggle.com/datasets/simuletic/cctv-incident-dataset-fall-and-lying-down-detection
+2. Click the **Download** button (top right corner)
+3. Wait for `archive.zip` (~35 MB) to download to `~/Downloads/`
+
+**Step 3: Extract to Project**
 
 ```bash
-# The script will provide a download link
-bash tests/download_dataset.sh
+# Navigate to Downloads
+cd ~/Downloads
 
-# Or manually:
-# 1. Visit: https://www.kaggle.com/datasets/simuletic/cctv-incident-dataset-fall-and-lying-down-detection
-# 2. Download and extract to: data/cctv-incident/
+# Extract the downloaded zip
+unzip archive.zip -d ~/MyStuff/MyProjects/VisioNull/data/
+
+# The dataset extracts to 'laying_dataset' folder
+# Verify the extraction
+cd ~/MyStuff/MyProjects/VisioNull
+ls data/laying_dataset/
 ```
 
-**Dataset structure after download:**
+**Expected output:**
 ```
-data/cctv-incident/
-├── images/          # 111 synthetic images
-├── labels/          # YOLO Pose format annotations
-└── data.yaml        # Dataset metadata
+images/  labels/  dataset.yaml
+```
+
+**Step 4: Verify Dataset**
+
+```bash
+# Count files
+find data/laying_dataset/images -name "*.png" | wc -l   # Should show 111
+find data/laying_dataset/labels -name "*.txt" | wc -l   # Should show 111
+```
+
+**Dataset structure after extraction:**
+```
+data/laying_dataset/
+├── images/          # 111 synthetic images (*.png)
+├── labels/          # YOLO Pose format annotations (*.txt)
+└── dataset.yaml     # Dataset metadata (classes: laying, standing)
 ```
 
 ---
@@ -456,7 +486,7 @@ python -m src.main --camera 1
 bash tests/download_dataset.sh
 
 # Or check if path exists
-ls -la data/cctv-incident/images/
+ls -la data/laying_dataset/images/
 ```
 
 ### Low FPS

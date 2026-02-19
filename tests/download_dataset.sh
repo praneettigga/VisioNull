@@ -19,7 +19,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DATA_DIR="$PROJECT_ROOT/data"
-DATASET_DIR="$DATA_DIR/cctv-incident"
+DATASET_DIR="$DATA_DIR/laying_dataset"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

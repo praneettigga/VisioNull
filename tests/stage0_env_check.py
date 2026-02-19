@@ -166,7 +166,9 @@ def main():
     check("data/ directory", os.path.isdir(data_dir), data_dir if os.path.isdir(data_dir) else "Missing (run: mkdir data)")
 
     # Check for dataset
-    dataset_dir = os.path.join(data_dir, "cctv-incident")
+    dataset_dir = os.path.join(data_dir, "laying_dataset")
+    if not os.path.exists(dataset_dir):
+        dataset_dir = os.path.join(data_dir, "cctv-incident")  # Fallback to old name
     if os.path.isdir(dataset_dir):
         # Count images
         img_count = len([f for f in os.listdir(os.path.join(dataset_dir, "images")) if f.endswith(('.jpg', '.png'))]) if os.path.isdir(os.path.join(dataset_dir, "images")) else 0

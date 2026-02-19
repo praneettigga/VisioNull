@@ -11,7 +11,7 @@ In live mode, displays real-time state transitions for manual testing.
 Usage:
     python3 tests/stage4_fall_detection.py --live
     python3 tests/stage4_fall_detection.py --dataset
-    python3 tests/stage4_fall_detection.py --dataset --dataset-path data/cctv-incident/images
+    python3 tests/stage4_fall_detection.py --dataset --dataset-path data/laying_dataset/images
 """
 
 import sys

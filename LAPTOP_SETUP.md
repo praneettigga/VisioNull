@@ -64,7 +64,7 @@ source venv/bin/activate
 
 You should see `(venv)` at the start of your prompt:
 ```
-(venv) praneet@Legion:~/MyStuff/MyProjects/VisioNull$
+(venv) myComputer@username:~/MyStuff/MyProjects/VisioNull$
 ```
 
 ### 5. Install Python Dependencies

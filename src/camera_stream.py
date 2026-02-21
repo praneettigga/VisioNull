@@ -6,13 +6,19 @@ Optimized for Raspberry Pi 4 with Pi Camera Module v2/v3.
 Supports:
 - Raspberry Pi Camera Module (v1, v2, v3, HQ)
 - picamera2 library (modern, recommended for Pi OS Bullseye/Bookworm)
-- Fallback to OpenCV for USB webcams or testing on non-Pi systems
+- rpicam-vid subprocess MJPEG pipe (fallback when picamera2 is unavailable)
+- OpenCV V4L2 as final fallback for USB webcams
 """
 
 import cv2
+import fcntl
 import numpy as np
+import os
+import select
 import time
 import logging
+import shutil
+import subprocess
 from typing import Generator, Optional, Tuple
 from abc import ABC, abstractmethod
 
@@ -28,6 +34,11 @@ try:
     logger.info("picamera2 library available")
 except ImportError:
     logger.warning("picamera2 not available, will use OpenCV fallback")
+
+# Detect rpicam-vid (libcamera CLI tool, available on Pi OS Bookworm/Trixie)
+RPICAM_AVAILABLE = shutil.which("rpicam-vid") is not None
+if not RPICAM_AVAILABLE:
+    logger.warning("rpicam-vid not found; Pi Camera via subprocess unavailable")
 
 
 class BaseCameraStream(ABC):
@@ -332,8 +343,8 @@ class OpenCVCameraStream(BaseCameraStream):
             
             logger.info(f"Opening camera with OpenCV (index {self.camera_index})...")
             
-            # Try to open the camera
-            self.cap = cv2.VideoCapture(self.camera_index)
+            # Try to open the camera; on Pi, prefer V4L2 backend explicitly
+            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
             
             if not self.cap.isOpened():
                 logger.error(f"Could not open camera at index {self.camera_index}")
@@ -341,6 +352,9 @@ class OpenCVCameraStream(BaseCameraStream):
                 return False
             
             # Set camera properties
+            # Request BGR3 (24-bit BGR) so libcamera V4L2 bridge returns proper BGR data
+            # Request YUYV (native Pi Camera format); OpenCV auto-converts it to BGR
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('Y', 'U', 'Y', 'V'))
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
             self.cap.set(cv2.CAP_PROP_FPS, self.fps)
@@ -351,11 +365,11 @@ class OpenCVCameraStream(BaseCameraStream):
             actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
             
-            # Warm up camera
+            # Warm up camera (libcamera V4L2 bridge needs more frames to stabilise)
             logger.info("Warming up camera...")
-            for _ in range(5):
+            for _ in range(15):
                 self.cap.read()
-                time.sleep(0.1)
+                time.sleep(0.05)
             
             print(f"Camera opened successfully (OpenCV fallback)!")
             print(f"  Resolution: {actual_width}x{actual_height}")
@@ -396,6 +410,26 @@ class OpenCVCameraStream(BaseCameraStream):
                     if self.start():
                         return self.get_frame()
             return None
+        
+        # Reshape flat buffer returned by libcamera V4L2 bridge.
+        # The bridge may return shape (1, W*H*3) instead of (H, W, 3).
+        if frame is not None and frame.ndim == 2 and frame.shape[0] == 1:
+            n = frame.shape[1]
+            if n % 3 == 0:
+                n_pixels = n // 3
+                # Try cap-reported dims first, then common resolutions
+                rw = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                rh = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if rw > 0 and rh > 0 and rw * rh == n_pixels:
+                    frame = frame.reshape(rh, rw, 3)
+                else:
+                    for w, h in [(640, 480), (1280, 720), (320, 240), (800, 600), (1920, 1080), (480, 640), (720, 1280)]:
+                        if w * h == n_pixels:
+                            frame = frame.reshape(h, w, 3)
+                            break
+                    else:
+                        logger.warning(f"Cannot reshape flat buffer of {n} bytes; dropping frame")
+                        return None
         
         # Reset failure counter on success
         self._consecutive_failures = 0
@@ -481,6 +515,246 @@ class OpenCVCameraStream(BaseCameraStream):
         return False
 
 
+class RpicamStream(BaseCameraStream):
+    """
+    Camera stream using rpicam-vid subprocess with MJPEG output.
+
+    Launches rpicam-vid as a child process, pipes MJPEG frames to stdout,
+    and decodes each JPEG frame with OpenCV.  This uses the full libcamera
+    ISP pipeline, so white balance and colour correction work correctly —
+    unlike accessing /dev/video0 (unicam) directly via V4L2.
+
+    Preferred over OpenCVCameraStream when picamera2 is unavailable.
+    """
+
+    _JPEG_SOI = b'\xff\xd8'
+    _JPEG_EOI = b'\xff\xd9'
+    _CHUNK = 16384  # bytes per os.read(); smaller = less blocking latency
+
+    def __init__(
+        self,
+        frame_width: int = 1280,
+        frame_height: int = 720,
+        fps: int = 15,
+        auto_reconnect: bool = True,
+    ):
+        self.frame_width = frame_width
+        self.frame_height = frame_height
+        self.fps = fps
+        self.auto_reconnect = auto_reconnect
+
+        self._proc: Optional[subprocess.Popen] = None
+        self._buf = b''
+
+        self._frame_count = 0
+        self._start_time: float = 0
+        self._last_frame_time: float = 0
+        self._actual_fps: float = 0.0
+        self._consecutive_failures: int = 0
+        self._max_consecutive_failures: int = 10
+
+    def start(self) -> bool:
+        """Launch rpicam-vid subprocess."""
+        self.stop()
+        cmd = [
+            'rpicam-vid',
+            '--nopreview',
+            '--codec', 'mjpeg',
+            '-t', '0',                       # run indefinitely
+            '--width', str(self.frame_width),
+            '--height', str(self.frame_height),
+            '--framerate', str(self.fps),
+            '-o', '-',                        # output to stdout
+        ]
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+            )
+            self._buf = b''
+            self._frame_count = 0
+            self._start_time = time.time()
+            self._last_frame_time = 0
+            self._actual_fps = 0.0
+            self._consecutive_failures = 0
+
+            # Warmup: read until we get the first real frame
+            logger.info('Waiting for first rpicam-vid frame...')
+            for _ in range(200):          # up to ~200 chunks ≈ a couple of seconds
+                frame = self._read_frame()
+                if frame is not None:
+                    # Switch pipe to non-blocking so get_frame() can drain
+                    # stale buffered frames without hanging.
+                    fd = self._proc.stdout.fileno()
+                    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+                    logger.info(f'rpicam-vid ready: {frame.shape}')
+                    print(f'Camera opened successfully (rpicam-vid MJPEG)!')
+                    print(f'  Resolution: {self.frame_width}x{self.frame_height}')
+                    print(f'  Target FPS: {self.fps}')
+                    return True
+
+            logger.error('rpicam-vid failed to produce a frame during warmup')
+            self.stop()
+            return False
+        except Exception as e:
+            logger.error(f'Failed to start rpicam-vid: {e}')
+            print(f'Error: could not start rpicam-vid: {e}')
+            return False
+
+    def _try_read(self) -> bool:
+        """Read available data from the pipe (non-blocking).
+
+        Returns True if data was read, False on EOF/error/would-block.
+        """
+        try:
+            chunk = os.read(self._proc.stdout.fileno(), self._CHUNK)
+        except BlockingIOError:
+            return False   # nothing available right now
+        except Exception:
+            return False
+        if not chunk:
+            return False
+        self._buf += chunk
+        return True
+
+    def _extract_frame(self) -> Optional[np.ndarray]:
+        """Extract one complete JPEG from the buffer, or None."""
+        soi = self._buf.find(self._JPEG_SOI)
+        if soi < 0:
+            self._buf = b''  # no start marker — discard prefix
+            return None
+        eoi = self._buf.find(self._JPEG_EOI, soi + 2)
+        if eoi < 0:
+            return None  # incomplete frame, need more data
+        eoi += 2
+        jpeg = self._buf[soi:eoi]
+        self._buf = self._buf[eoi:]
+        return cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+    def _read_frame(self) -> Optional[np.ndarray]:
+        """Wait for one complete JPEG frame from the pipe and return it.
+
+        Uses select() to block-wait for data on the non-blocking fd.
+        """
+        if self._proc is None or self._proc.poll() is not None:
+            return None
+        fd = self._proc.stdout.fileno()
+        while True:
+            frame = self._extract_frame()
+            if frame is not None:
+                return frame
+            # Wait up to 2s for data to arrive
+            readable, _, _ = select.select([fd], [], [], 2.0)
+            if not readable:
+                return None  # timeout
+            if not self._try_read():
+                return None
+
+    def get_frame(self) -> Optional[np.ndarray]:
+        """Return the *latest* available frame, draining any stale ones.
+
+        When ML inference takes longer than the camera interval, multiple
+        JPEG frames can accumulate in the pipe. We drain all of them and
+        return only the most recent one so the display stays current.
+        """
+        if self._proc is None or self._proc.poll() is not None:
+            if self.auto_reconnect:
+                logger.warning('rpicam-vid process ended, restarting...')
+                if self.start():
+                    return self.get_frame()
+            return None
+
+        # 1. Read at least one frame (blocking)
+        latest = self._read_frame()
+        if latest is None:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._max_consecutive_failures and self.auto_reconnect:
+                logger.warning('Too many rpicam-vid failures, restarting...')
+                self._consecutive_failures = 0
+                self.start()
+            return None
+
+        # 2. Drain any additional buffered frames to stay current
+        while True:
+            # Non-blocking: read whatever data is already available
+            try:
+                chunk = os.read(self._proc.stdout.fileno(), self._CHUNK)
+            except (BlockingIOError, OSError):
+                break
+            if not chunk:
+                break
+            self._buf += chunk
+            # Extract as many frames as possible from the buffer
+            while True:
+                frame = self._extract_frame()
+                if frame is None:
+                    break
+                latest = frame  # keep overwriting with newer frame
+
+        self._consecutive_failures = 0
+        self._frame_count += 1
+        now = time.time()
+        if self._last_frame_time > 0:
+            fi = now - self._last_frame_time
+            self._actual_fps = 0.9 * self._actual_fps + 0.1 * (1.0 / fi if fi > 0 else 0)
+        self._last_frame_time = now
+        return latest
+
+    def stop(self) -> None:
+        """Terminate the rpicam-vid subprocess."""
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=3)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            self._proc = None
+            self._buf = b''
+            logger.info('rpicam-vid process stopped')
+            print('Camera released')
+
+    def is_opened(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def get_fps(self) -> float:
+        return self._actual_fps
+
+    def get_stats(self) -> dict:
+        elapsed = time.time() - self._start_time if self._start_time > 0 else 0
+        return {
+            'frame_count': self._frame_count,
+            'elapsed_time': elapsed,
+            'actual_fps': self._actual_fps,
+            'resolution': f'{self.frame_width}x{self.frame_height}',
+            'camera_type': 'RpicamMJPEG',
+        }
+
+    def get_frame_dimensions(self) -> Tuple[int, int]:
+        return self.frame_width, self.frame_height
+
+    def frames(self):
+        """Generator yielding frames continuously."""
+        while self.is_opened():
+            frame = self.get_frame()
+            if frame is not None:
+                yield frame
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
+
+
 def CameraStream(
     camera_index: int = 0,
     frame_width: int = 1280,
@@ -491,19 +765,20 @@ def CameraStream(
 ) -> BaseCameraStream:
     """
     Factory function to create the appropriate camera stream.
-    
-    Automatically selects:
-    - PiCameraStream if picamera2 is available (Raspberry Pi with Pi Camera)
-    - OpenCVCameraStream as fallback (USB webcam or non-Pi systems)
-    
+
+    Priority:
+    1. PiCameraStream (picamera2) — best quality, needs system picamera2 package
+    2. RpicamStream (rpicam-vid subprocess MJPEG) — full ISP pipeline, proper color
+    3. OpenCVCameraStream — last resort for USB webcams / non-Pi systems
+
     Args:
         camera_index: Camera device index (only used for OpenCV fallback)
         frame_width: Width of captured frames
         frame_height: Height of captured frames
         fps: Target frames per second
         auto_reconnect: Whether to auto-reconnect on camera failure
-        force_opencv: Force using OpenCV even if picamera2 is available
-        
+        force_opencv: Force using OpenCV even if picamera2/rpicam-vid is available
+
     Returns:
         Appropriate camera stream instance
     """
@@ -511,6 +786,15 @@ def CameraStream(
         logger.info("Using Pi Camera with picamera2")
         print("Detected Pi Camera - using picamera2")
         return PiCameraStream(
+            frame_width=frame_width,
+            frame_height=frame_height,
+            fps=fps,
+            auto_reconnect=auto_reconnect
+        )
+    elif RPICAM_AVAILABLE and not force_opencv:
+        logger.info("Using Pi Camera via rpicam-vid subprocess (ISP pipeline)")
+        print("Detected rpicam-vid - using Pi Camera with full ISP colour processing")
+        return RpicamStream(
             frame_width=frame_width,
             frame_height=frame_height,
             fps=fps,

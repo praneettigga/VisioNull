@@ -310,7 +310,10 @@ def main():
         return
     
     try:
+        import time as _time
         frame_count = 0
+        fps_display = 0.0
+        prev_time = _time.monotonic()
         while True:
             frame = camera.get_frame()
             
@@ -340,11 +343,18 @@ def main():
                 status = "No Person Detected"
                 color = (0, 0, 255)
             
-            # Add status overlay
+            # Compute actual FPS
             frame_count += 1
+            now = _time.monotonic()
+            dt = now - prev_time
+            if dt > 0:
+                fps_display = 0.9 * fps_display + 0.1 * (1.0 / dt)
+            prev_time = now
+
+            # Add status overlay
             cv2.putText(
                 output_frame,
-                f"Frame: {frame_count} | {status}",
+                f"FPS: {fps_display:.1f} | {status}",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,

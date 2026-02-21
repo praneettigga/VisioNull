@@ -145,6 +145,8 @@ class FallDetector:
             self.horizontal_ratio_threshold = getattr(config, 'HORIZONTAL_RATIO_THRESHOLD', horizontal_ratio_threshold)
             self.fall_confirm_frames = getattr(config, 'FALL_CONFIRM_FRAMES', fall_confirm_frames)
             self.head_velocity_threshold = getattr(config, 'HEAD_VELOCITY_THRESHOLD', head_velocity_threshold)
+            self.hip_height_threshold = getattr(config, 'HIP_HEIGHT_THRESHOLD', hip_height_threshold)
+            self.leg_compression_threshold = getattr(config, 'LEG_COMPRESSION_THRESHOLD', leg_compression_threshold)
             self.post_fall_validation_seconds = getattr(config, 'POST_FALL_VALIDATION_SECONDS', post_fall_validation_seconds)
             self.confidence_threshold = getattr(config, 'FALL_CONFIDENCE_THRESHOLD', confidence_threshold)
         

@@ -11,9 +11,11 @@
 opencv-python>=4.5.0
 
 # MediaPipe for pose estimation
-# Note: On Raspberry Pi, you may need to build from source or use:
-#   pip install mediapipe-rpi4
-mediapipe>=0.10.0
+# Note: On Raspberry Pi (aarch64), mediapipe only has wheels for Python 3.8-3.12.
+# Versions 0.10.20+ dropped aarch64 Linux support entirely.
+# Use Python 3.12 via pyenv and pin to 0.10.18 (last aarch64-compatible release):
+#   pip install mediapipe==0.10.18
+mediapipe>=0.10.0,<=0.10.18
 
 # NumPy for numerical operations
 numpy>=1.21.0

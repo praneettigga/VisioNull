@@ -2,9 +2,9 @@
 
 A real-time fall detection system designed for **Raspberry Pi** using a camera module, **MediaPipe Pose**, and **OpenCV**. The system detects when a person falls and displays "FALL DETECTED" on the video feed.
 
-![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)
+![Python](https://img.shields.io/badge/Python-3.12-blue.svg)
 ![OpenCV](https://img.shields.io/badge/OpenCV-4.5+-green.svg)
-![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10+-orange.svg)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10.18-orange.svg)
 
 ## Features
 
@@ -86,6 +86,7 @@ The script will:
 - Raspberry Pi 3, 4, or 5 (Pi 4 with 4GB+ RAM recommended)
 - Raspberry Pi Camera Module (v1, v2, or v3) or USB webcam
 - Raspberry Pi OS (Trixie or Bookworm, 64-bit recommended)
+- **Python 3.12** (required — see Step 4; Debian Trixie ships Python 3.13 which is not supported by MediaPipe on aarch64)
 - Internet connection for notifications
 - Monitor, keyboard, and mouse for initial setup (optional for headless)
 
@@ -124,10 +125,36 @@ sudo apt install -y libopencv-dev python3-opencv
 sudo apt install -y python3-picamera2
 
 # Install additional libraries for MediaPipe
-sudo apt install -y libatlas-base-dev libhdf5-dev libharfbuzz-dev
+sudo apt install -y libopenblas-dev libhdf5-dev libharfbuzz-dev
+
+# Install pyenv build dependencies (needed for Step 4)
+sudo apt install -y build-essential libssl-dev zlib1g-dev libbz2-dev \
+  libreadline-dev libsqlite3-dev curl libncursesw5-dev xz-utils \
+  libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
 ```
 
-### Step 4: Create Project Directory and Virtual Environment
+> If you're on an older Raspberry Pi OS image where `libopenblas-dev` isn't available,
+> use `libatlas-base-dev` instead.
+
+### Step 4: Install Python 3.12 and Create Virtual Environment
+
+> **Why Python 3.12?** Debian Trixie ships Python 3.13, but MediaPipe's pre-built
+> aarch64 wheels only support Python 3.8–3.12. Use [pyenv](https://github.com/pyenv/pyenv)
+> to install Python 3.12 alongside the system Python.
+
+```bash
+# Install pyenv
+curl https://pyenv.run | bash
+
+# Add pyenv to your shell (for bash)
+echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
+echo '[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
+echo 'eval "$(pyenv init - bash)"' >> ~/.bashrc
+source ~/.bashrc
+
+# Install Python 3.12
+pyenv install 3.12
+```
 
 ```bash
 # Navigate to your projects folder
@@ -139,12 +166,21 @@ cd ~
 
 cd VisioNull
 
-# Create a virtual environment
-python3 -m venv venv
+# Pin the project to Python 3.12
+pyenv local 3.12
+
+# Create a virtual environment using Python 3.12
+# --system-site-packages is required so picamera2 (system package) is accessible
+python -m venv venv --system-site-packages
 
 # Activate the virtual environment
 source venv/bin/activate
 ```
+
+> **Note:** `--system-site-packages` is required because `picamera2` is only available
+> as a system package (`sudo apt install python3-picamera2`) and cannot be installed
+> via pip. Without it, the camera module silently falls back to OpenCV, which cannot
+> access the Pi Camera.
 
 > **Note:** Always activate the virtual environment before running the project:
 > ```bash
@@ -161,26 +197,20 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-#### MediaPipe on Raspberry Pi
+#### MediaPipe on Raspberry Pi (aarch64)
 
-MediaPipe provides pre-built wheels for Raspberry Pi. If the standard `mediapipe` package doesn't work, try:
+MediaPipe's aarch64 Linux wheels **only support Python 3.8–3.12**. Versions 0.10.20 and later
+dropped aarch64 Linux support entirely. The last compatible release is `0.10.18`.
 
-**For Raspberry Pi 4 (64-bit OS):**
+> This is why Python 3.12 via pyenv is required (see Step 4). The system Python 3.13
+> on Debian Trixie has **no available mediapipe wheel**.
+
 ```bash
-pip install mediapipe
-```
+# Install the last aarch64-compatible mediapipe release explicitly
+pip install mediapipe==0.10.18
 
-**For Raspberry Pi 3 or 32-bit OS:**
-```bash
-# Try the community builds
-pip install mediapipe-rpi4
-# OR
-pip install mediapipe-rpi3
-```
-
-If you encounter issues, you may need to build from source or use an older version:
-```bash
-pip install mediapipe==0.10.0
+# Then install the rest of the dependencies
+pip install -r requirements.txt
 ```
 
 ### Step 6: Test Your Setup
@@ -250,31 +280,34 @@ The project includes stage-by-stage test scripts that validate each layer indepe
 Run them **in order** — each builds on the previous:
 
 ```bash
+# Activate the virtual environment first
+source ~/VisioNull/venv/bin/activate
+
 # Stage 0: Verify environment (tools, libraries, model file)
-python3 tests/stage0_env_check.py
+python tests/stage0_env_check.py
 
 # Stage 1: Test camera capture (saves a test frame)
-python3 tests/stage1_camera.py
+python tests/stage1_camera.py
 
 # Stage 2: Load & verify dataset (download first)
 bash tests/download_dataset.sh
-python3 tests/stage2_dataset.py
-python3 tests/stage2_dataset.py --browse   # Interactive viewer
+python tests/stage2_dataset.py
+python tests/stage2_dataset.py --browse   # Interactive viewer
 
 # Stage 3: Test pose estimation
-python3 tests/stage3_pose.py --live        # On camera
-python3 tests/stage3_pose.py --dataset     # On dataset (with accuracy report)
+python tests/stage3_pose.py --live        # On camera
+python tests/stage3_pose.py --dataset     # On dataset (with accuracy report)
 
 # Stage 4: Test fall detection
-python3 tests/stage4_fall_detection.py --live      # Act out falls
-python3 tests/stage4_fall_detection.py --dataset   # Precision/recall on dataset
+python tests/stage4_fall_detection.py --live      # Act out falls
+python tests/stage4_fall_detection.py --dataset   # Precision/recall on dataset
 
 # Stage 5: Optimize thresholds
-python3 tests/stage5_tune.py               # Sweep thresholds
-python3 tests/stage5_tune.py --ml          # Also compare ML classifiers
+python tests/stage5_tune.py               # Sweep thresholds
+python tests/stage5_tune.py --ml          # Also compare ML classifiers
 
 # Stage 6: Full pipeline integration
-python3 tests/stage6_full_pipeline.py --live   # With local test webhook
+python tests/stage6_full_pipeline.py --live   # With local test webhook
 ```
 
 ### Dataset Evaluation
@@ -549,7 +582,18 @@ VisioNull/
 
 ### MediaPipe Installation Issues
 
-1. **Memory errors during install:**
+1. **`No matching distribution found for mediapipe` (Python 3.13):**
+   MediaPipe has no aarch64 wheel for Python 3.13. You must use Python 3.12 via pyenv.
+   Follow Step 4 above, then reinstall:
+   ```bash
+   # Confirm you're on Python 3.12
+   python --version  # Should print Python 3.12.x
+
+   # Install correct mediapipe version
+   pip install mediapipe==0.10.18
+   ```
+
+2. **Memory errors during install:**
    ```bash
    # Use swap space
    sudo dphys-swapfile swapoff
@@ -559,7 +603,7 @@ VisioNull/
    sudo dphys-swapfile swapon
    ```
 
-2. **Missing shared libraries:**
+3. **Missing shared libraries:**
    ```bash
    sudo apt install -y libgl1-mesa-glx libglib2.0-0
    ```

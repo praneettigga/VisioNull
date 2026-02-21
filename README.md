@@ -50,8 +50,8 @@ The system uses a **rule-based approach** analyzing body pose landmarks from Med
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `fall_head_threshold` | 0.55 | Head Y position ratio to consider "low" |
-| `horizontal_ratio_threshold` | 0.6 | Body width/height ratio for "horizontal" |
+| `fall_head_threshold` | 0.35 | Head Y position ratio to consider "low" |
+| `horizontal_ratio_threshold` | 0.3 | Body width/height ratio for "horizontal" |
 | `fall_confirm_frames` | 6 | Frames to confirm a fall |
 | `head_velocity_threshold` | 10.0 | Pixels/frame for "falling motion" |
 | `post_fall_validation_seconds` | 2.0 | Seconds person must stay down after detection |
@@ -363,8 +363,8 @@ FRAME_HEIGHT = 720
 TARGET_FPS = 15      # Pi 4 can handle 15-20 FPS
 
 # Fall detection sensitivity
-FALL_HEAD_THRESHOLD = 0.55           # Lower = more sensitive
-HORIZONTAL_RATIO_THRESHOLD = 0.6    # Lower = easier to detect horizontal
+FALL_HEAD_THRESHOLD = 0.35           # Lower = more sensitive
+HORIZONTAL_RATIO_THRESHOLD = 0.3    # Lower = easier to detect horizontal
 FALL_CONFIRM_FRAMES = 6              # Fewer = faster detection
 POST_FALL_VALIDATION_SECONDS = 2.0   # Person must stay down this long
 FALL_CONFIDENCE_THRESHOLD = 0.7      # Minimum confidence to notify
@@ -631,9 +631,9 @@ HORIZONTAL_RATIO_THRESHOLD = 0.8
 FALL_CONFIRM_FRAMES = 10
 POST_FALL_VALIDATION_SECONDS = 3.0
 
-# Balanced (default)
-FALL_HEAD_THRESHOLD = 0.55
-HORIZONTAL_RATIO_THRESHOLD = 0.6
+# Balanced (tuned default — F1=0.957)
+FALL_HEAD_THRESHOLD = 0.35
+HORIZONTAL_RATIO_THRESHOLD = 0.3
 FALL_CONFIRM_FRAMES = 6
 POST_FALL_VALIDATION_SECONDS = 2.0
 ```

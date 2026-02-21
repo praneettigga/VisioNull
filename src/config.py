@@ -41,9 +41,12 @@ TARGET_FPS = 15
 MIN_DETECTION_CONFIDENCE = 0.6
 MIN_TRACKING_CONFIDENCE = 0.6
 
-# Fall detection thresholds (medium sensitivity)
-FALL_HEAD_THRESHOLD = 0.55          # Head Y ratio to consider "low" (0.55 = 55% down)
-HORIZONTAL_RATIO_THRESHOLD = 0.6    # Body width/height ratio for "horizontal"
+# Fall detection thresholds (tuned via stage5_tune.py)
+# Best: Prec=0.917, Recall=1.000, F1=0.957, Acc=0.917
+FALL_HEAD_THRESHOLD = 0.35          # Head Y ratio to consider "low" (0.35 = 35% down)
+HORIZONTAL_RATIO_THRESHOLD = 0.3    # Body width/height ratio for "horizontal"
+HIP_HEIGHT_THRESHOLD = 0.50         # Hip Y ratio above which hips are "low" (on ground)
+LEG_COMPRESSION_THRESHOLD = 0.30    # Leg compression ratio above which legs are compressed
 FALL_CONFIRM_FRAMES = 6             # Frames to initially detect fall
 
 # Confidence threshold for sending notifications

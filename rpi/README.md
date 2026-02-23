@@ -717,3 +717,11 @@ This project is open source and available under the MIT License.
 - [MediaPipe](https://mediapipe.dev/) by Google for pose estimation
 - [OpenCV](https://opencv.org/) for computer vision
 - Raspberry Pi Foundation for the hardware platform
+
+
+
+Remove after:
+# On the Pi
+curl -X POST http://<LAPTOP_IP>:5000/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"device_name":"pi-test","message":"connectivity test","fall_confidence":0.5,"event_id":"ping-001"}'

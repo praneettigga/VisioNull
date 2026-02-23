@@ -17,6 +17,9 @@ opencv-python>=4.5.0
 #   pip install mediapipe==0.10.18
 mediapipe>=0.10.0,<=0.10.18
 
+# Load .env configuration
+python-dotenv>=1.0
+
 # NumPy for numerical operations
 numpy>=1.21.0
 

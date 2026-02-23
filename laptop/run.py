@@ -8,6 +8,9 @@ Usage:
 Then open http://localhost:5000 in your browser.
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from backend.app import create_app
 from backend.config import HOST, PORT, DEBUG
 

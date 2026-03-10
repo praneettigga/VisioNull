@@ -112,3 +112,9 @@ The RPi sends (and the laptop expects) this JSON on `POST /webhook`:
 ## License
 
 MIT
+
+
+curl -X POST http://<LAPTOP_IP>:5000/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"device_name":"pi-test","message":"connectivity test","fall_confidence":0.5,"event_id":"ping-001"}'
+

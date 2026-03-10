@@ -17,10 +17,12 @@ try:
     from src.pipeline.camera_stream import CameraStream
     from src.pipeline.pose_estimator import PoseEstimator
     from src.pipeline.fall_detector import FallDetector, FallState
+    from src.notification.notifier import FallNotifier
 except ImportError:
     from pipeline.camera_stream import CameraStream
     from pipeline.pose_estimator import PoseEstimator
     from pipeline.fall_detector import FallDetector, FallState
+    from notification.notifier import FallNotifier
 
 
 class FallDetectionApp:
@@ -81,6 +83,10 @@ class FallDetectionApp:
             recovery_frames=8                 # Faster recovery check
         )
         
+        # Notifier
+        self.notifier = FallNotifier()
+        print(f"Notifier ready (webhook: {self.notifier.webhook_url})")
+
         # FPS tracking
         self.fps_start_time = time.time()
         self.fps_frame_count = 0
@@ -240,7 +246,11 @@ class FallDetectionApp:
                 
                 # Update fall detector
                 state, metrics = self.fall_detector.update(landmarks, frame_height)
-                
+
+                # Send notification when fall is confirmed
+                if state == FallState.FALLEN:
+                    self.notifier.notify_fall(metrics.confidence)
+
                 # Draw pose skeleton
                 if landmarks:
                     frame = self.pose_estimator.draw_landmarks(frame, landmarks)
@@ -298,6 +308,7 @@ class FallDetectionApp:
     def cleanup(self) -> None:
         """Clean up resources."""
         print("Cleaning up...")
+        self.notifier.shutdown()
         self.pose_estimator.close()
         self.camera.stop()
         cv2.destroyAllWindows()

@@ -376,6 +376,8 @@ class FallDetector:
                 
                 if self.current_state == FallState.VALIDATING:
                     # Check if validation period has passed
+                    if self._validation_start_time is None:
+                        self._validation_start_time = current_time
                     elapsed = current_time - self._validation_start_time
                     validation_time = max(0, self.post_fall_validation_seconds - elapsed)
                     

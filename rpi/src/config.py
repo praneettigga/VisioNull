@@ -7,9 +7,16 @@ Edit this file to customize the system behavior.
 
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+_ENV_FILE = Path(__file__).parent.parent / ".env"
+load_dotenv(_ENV_FILE, override=True)
+_env = dotenv_values(_ENV_FILE)  # Read .env directly, bypasses shell environment
+
+
+def _get(key: str, default: str = "") -> str:
+    """Read from .env file first, then shell environment, then default."""
+    return _env.get(key) or os.environ.get(key, default)
 
 # =============================================================================
 # DEVICE SETTINGS
@@ -75,7 +82,7 @@ RECOVERY_FRAMES = 10
 #   - https://your-server.com/fall-alert
 #   - https://webhook.site/your-unique-id (for testing)
 #   - https://maker.ifttt.com/trigger/fall_detected/with/key/YOUR_KEY
-WEBHOOK_URL = os.environ.get("VISIONULL_WEBHOOK_URL", "http://localhost:5000/webhook")
+WEBHOOK_URL = _get("VISIONULL_WEBHOOK_URL", "http://localhost:5000/webhook")
 
 # Webhook request timeout (seconds)
 WEBHOOK_TIMEOUT = 10

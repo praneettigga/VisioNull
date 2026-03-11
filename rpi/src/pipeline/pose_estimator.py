@@ -1,0 +1,411 @@
+"""
+Pose Estimator Module
+Wrapper around MediaPipe Pose Landmarker (Tasks Vision API) for lightweight pose estimation.
+Updated to work with MediaPipe 0.10.x which uses the new Tasks Vision API.
+"""
+
+import cv2
+import numpy as np
+from typing import Optional, List, Tuple
+from dataclasses import dataclass
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+import urllib.request
+import os
+
+# Import config for model path
+try:
+    from src import config
+except ImportError:
+    try:
+        import config
+    except ImportError:
+        config = None
+
+
+@dataclass
+class Landmark:
+    """
+    Represents a single pose landmark.
+    
+    Attributes:
+        x: X coordinate in pixels
+        y: Y coordinate in pixels
+        z: Z coordinate (depth, relative to hips)
+        visibility: Confidence score for this landmark (0-1)
+        name: Name of the landmark (e.g., 'nose', 'left_shoulder')
+    """
+    x: float
+    y: float
+    z: float
+    visibility: float
+    name: str
+
+
+class PoseEstimator:
+    """
+    Wrapper around MediaPipe Pose Landmarker for efficient pose estimation.
+    Uses the lightweight model suitable for laptops and Raspberry Pi.
+    """
+    
+    # MediaPipe Pose landmark names (indices 0-32)
+    LANDMARK_NAMES = [
+        'nose', 'left_eye_inner', 'left_eye', 'left_eye_outer',
+        'right_eye_inner', 'right_eye', 'right_eye_outer',
+        'left_ear', 'right_ear', 'mouth_left', 'mouth_right',
+        'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+        'left_wrist', 'right_wrist', 'left_pinky', 'right_pinky',
+        'left_index', 'right_index', 'left_thumb', 'right_thumb',
+        'left_hip', 'right_hip', 'left_knee', 'right_knee',
+        'left_ankle', 'right_ankle', 'left_heel', 'right_heel',
+        'left_foot_index', 'right_foot_index'
+    ]
+    
+    # Key landmark indices for fall detection
+    NOSE = 0
+    LEFT_SHOULDER = 11
+    RIGHT_SHOULDER = 12
+    LEFT_HIP = 23
+    RIGHT_HIP = 24
+    LEFT_ANKLE = 27
+    RIGHT_ANKLE = 28
+    LEFT_KNEE = 25
+    RIGHT_KNEE = 26
+    
+    # Model URL for downloading
+    MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+    MODEL_PATH = config.MODEL_PATH if config is not None else "pose_landmarker_lite.task"
+    
+    def __init__(
+        self,
+        model_complexity: int = 0,
+        min_detection_confidence: float = 0.5,
+        min_tracking_confidence: float = 0.5,
+        static_image_mode: bool = False
+    ):
+        """
+        Initialize the pose estimator.
+        
+        Args:
+            model_complexity: 0 (lite), 1 (full), or 2 (heavy). Use 0 for Raspberry Pi.
+            min_detection_confidence: Minimum confidence for person detection
+            min_tracking_confidence: Minimum confidence for landmark tracking
+            static_image_mode: If True, treats each frame independently
+        """
+        self.model_complexity = model_complexity
+        self.min_detection_confidence = min_detection_confidence
+        self.min_tracking_confidence = min_tracking_confidence
+        
+        # Download model if not present
+        self._ensure_model_downloaded()
+        
+        # Resolve model path to string for MediaPipe
+        model_path_str = str(self.MODEL_PATH)
+        
+        # Initialize MediaPipe Pose Landmarker with Tasks API
+        base_options = python.BaseOptions(model_asset_path=model_path_str)
+        
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+            output_segmentation_masks=False
+        )
+        
+        self.landmarker = vision.PoseLandmarker.create_from_options(options)
+        
+        print(f"PoseEstimator initialized (model_complexity={model_complexity})")
+    
+    def _ensure_model_downloaded(self):
+        """Download the pose landmarker model if not present."""
+        model_path = str(self.MODEL_PATH)
+        if not os.path.exists(model_path):
+            # Ensure parent directory exists
+            model_dir = os.path.dirname(model_path)
+            if model_dir:
+                os.makedirs(model_dir, exist_ok=True)
+            print(f"Downloading pose landmarker model...")
+            urllib.request.urlretrieve(self.MODEL_URL, model_path)
+            print(f"Model downloaded to {model_path}")
+    
+    def get_landmarks(
+        self,
+        frame_bgr: np.ndarray
+    ) -> Optional[List[Landmark]]:
+        """
+        Extract pose landmarks from a BGR frame.
+        
+        Args:
+            frame_bgr: Input frame in BGR format (OpenCV default)
+            
+        Returns:
+            List of Landmark objects with pixel coordinates, or None if no person detected
+        """
+        if frame_bgr is None:
+            return None
+        
+        # Get frame dimensions
+        height, width = frame_bgr.shape[:2]
+        
+        # Convert BGR to RGB for MediaPipe
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        
+        # Create MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        
+        # Process the frame
+        results = self.landmarker.detect(mp_image)
+        
+        # Check if pose was detected
+        if not results.pose_landmarks or len(results.pose_landmarks) == 0:
+            return None
+        
+        # Get first pose (we only track one person)
+        pose_landmarks = results.pose_landmarks[0]
+        
+        # Convert normalized landmarks to pixel coordinates
+        landmarks = []
+        for idx, lm in enumerate(pose_landmarks):
+            # Get visibility from world landmarks if available
+            visibility = 0.9  # Default high visibility
+            if results.pose_world_landmarks and len(results.pose_world_landmarks) > 0:
+                world_lm = results.pose_world_landmarks[0]
+                if idx < len(world_lm):
+                    visibility = getattr(world_lm[idx], 'visibility', 0.9)
+            
+            landmark = Landmark(
+                x=lm.x * width,
+                y=lm.y * height,
+                z=lm.z,  # Keep relative depth as-is
+                visibility=visibility if hasattr(lm, 'visibility') else 0.9,
+                name=self.LANDMARK_NAMES[idx] if idx < len(self.LANDMARK_NAMES) else f"landmark_{idx}"
+            )
+            landmarks.append(landmark)
+        
+        return landmarks
+    
+    def draw_landmarks(
+        self,
+        frame_bgr: np.ndarray,
+        landmarks: Optional[List[Landmark]] = None,
+        draw_connections: bool = True,
+        landmark_color: Tuple[int, int, int] = (0, 255, 0),
+        connection_color: Tuple[int, int, int] = (255, 255, 255)
+    ) -> np.ndarray:
+        """
+        Draw pose landmarks on a frame.
+        
+        Args:
+            frame_bgr: Input frame in BGR format
+            landmarks: List of Landmark objects (if None, will run detection)
+            draw_connections: Whether to draw skeleton connections
+            landmark_color: BGR color for landmark points
+            connection_color: BGR color for connections
+            
+        Returns:
+            Frame with landmarks drawn
+        """
+        output_frame = frame_bgr.copy()
+        
+        # If no landmarks provided, detect them
+        if landmarks is None:
+            landmarks = self.get_landmarks(frame_bgr)
+        
+        if landmarks is None:
+            return output_frame
+        
+        # Draw landmarks
+        for lm in landmarks:
+            if lm.visibility > 0.5:  # Only draw visible landmarks
+                cv2.circle(
+                    output_frame,
+                    (int(lm.x), int(lm.y)),
+                    4,
+                    landmark_color,
+                    -1
+                )
+        
+        # Draw connections (skeleton)
+        if draw_connections:
+            connections = [
+                # Torso
+                (self.LEFT_SHOULDER, self.RIGHT_SHOULDER),
+                (self.LEFT_SHOULDER, self.LEFT_HIP),
+                (self.RIGHT_SHOULDER, self.RIGHT_HIP),
+                (self.LEFT_HIP, self.RIGHT_HIP),
+                # Left arm
+                (self.LEFT_SHOULDER, 13),  # left_elbow
+                (13, 15),  # left_wrist
+                # Right arm
+                (self.RIGHT_SHOULDER, 14),  # right_elbow
+                (14, 16),  # right_wrist
+                # Left leg
+                (self.LEFT_HIP, self.LEFT_KNEE),
+                (self.LEFT_KNEE, self.LEFT_ANKLE),
+                # Right leg
+                (self.RIGHT_HIP, self.RIGHT_KNEE),
+                (self.RIGHT_KNEE, self.RIGHT_ANKLE),
+                # Head
+                (self.NOSE, self.LEFT_SHOULDER),
+                (self.NOSE, self.RIGHT_SHOULDER),
+            ]
+            
+            for start_idx, end_idx in connections:
+                if (start_idx < len(landmarks) and end_idx < len(landmarks) and
+                    landmarks[start_idx].visibility > 0.5 and 
+                    landmarks[end_idx].visibility > 0.5):
+                    start_point = (int(landmarks[start_idx].x), int(landmarks[start_idx].y))
+                    end_point = (int(landmarks[end_idx].x), int(landmarks[end_idx].y))
+                    cv2.line(output_frame, start_point, end_point, connection_color, 2)
+        
+        return output_frame
+    
+    def get_bounding_box(
+        self,
+        landmarks: List[Landmark],
+        padding: float = 0.1
+    ) -> Tuple[int, int, int, int]:
+        """
+        Calculate bounding box around detected pose.
+        
+        Args:
+            landmarks: List of Landmark objects
+            padding: Padding as fraction of box size
+            
+        Returns:
+            Tuple of (x1, y1, x2, y2) in pixel coordinates
+        """
+        visible_landmarks = [lm for lm in landmarks if lm.visibility > 0.5]
+        
+        if not visible_landmarks:
+            return (0, 0, 0, 0)
+        
+        x_coords = [lm.x for lm in visible_landmarks]
+        y_coords = [lm.y for lm in visible_landmarks]
+        
+        x1, x2 = min(x_coords), max(x_coords)
+        y1, y2 = min(y_coords), max(y_coords)
+        
+        # Add padding
+        width = x2 - x1
+        height = y2 - y1
+        x1 -= width * padding
+        x2 += width * padding
+        y1 -= height * padding
+        y2 += height * padding
+        
+        return (int(x1), int(y1), int(x2), int(y2))
+    
+    def close(self) -> None:
+        """Release MediaPipe resources."""
+        self.landmarker.close()
+        print("PoseEstimator closed")
+
+
+def main():
+    """
+    Test the pose estimator by displaying skeleton overlay on camera feed.
+    Press 'q' to quit.
+    """
+    from src.pipeline.camera_stream import CameraStream
+    
+    print("=" * 50)
+    print("Pose Estimator Test")
+    print("=" * 50)
+    print("Press 'q' to quit")
+    print()
+    
+    # Initialize camera and pose estimator
+    camera = CameraStream(camera_index=0, frame_width=640, frame_height=480)
+    pose_estimator = PoseEstimator(model_complexity=0)
+    
+    if not camera.start():
+        print("Failed to start camera")
+        return
+    
+    try:
+        import time as _time
+        frame_count = 0
+        fps_display = 0.0
+        prev_time = _time.monotonic()
+        while True:
+            frame = camera.get_frame()
+            
+            if frame is None:
+                print("Lost camera connection")
+                break
+            
+            # Get pose landmarks
+            landmarks = pose_estimator.get_landmarks(frame)
+            
+            # Draw skeleton on frame
+            output_frame = pose_estimator.draw_landmarks(frame, landmarks)
+            
+            # Draw bounding box if person detected
+            if landmarks:
+                bbox = pose_estimator.get_bounding_box(landmarks)
+                cv2.rectangle(
+                    output_frame,
+                    (bbox[0], bbox[1]),
+                    (bbox[2], bbox[3]),
+                    (255, 0, 255),
+                    2
+                )
+                status = "Person Detected"
+                color = (0, 255, 0)
+            else:
+                status = "No Person Detected"
+                color = (0, 0, 255)
+            
+            # Compute actual FPS
+            frame_count += 1
+            now = _time.monotonic()
+            dt = now - prev_time
+            if dt > 0:
+                fps_display = 0.9 * fps_display + 0.1 * (1.0 / dt)
+            prev_time = now
+
+            # Add status overlay
+            cv2.putText(
+                output_frame,
+                f"FPS: {fps_display:.1f} | {status}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
+            )
+            
+            cv2.putText(
+                output_frame,
+                "Press 'q' to quit",
+                (10, output_frame.shape[0] - 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                1
+            )
+            
+            # Display the frame
+            cv2.imshow("Pose Estimator Test", output_frame)
+            
+            # Check for quit key
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("\nQuitting...")
+                break
+                
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    finally:
+        pose_estimator.close()
+        camera.stop()
+        cv2.destroyAllWindows()
+        print("Test completed")
+
+
+if __name__ == "__main__":
+    main()

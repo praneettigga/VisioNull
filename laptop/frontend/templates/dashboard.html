@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}VisioNull — Fall Detection Dashboard{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <h1>Fall Detection Dashboard</h1>
+    <div class="dashboard-controls">
+        <label class="toggle">
+            <input type="checkbox" id="filter-unacknowledged" checked>
+            <span>Show unacknowledged only</span>
+        </label>
+        <button class="btn btn-secondary" id="btn-refresh">Refresh</button>
+    </div>
+</div>
+
+<div class="stats-bar" id="stats-bar">
+    <div class="stat">
+        <span class="stat-value" id="stat-total">—</span>
+        <span class="stat-label">Total Events</span>
+    </div>
+    <div class="stat">
+        <span class="stat-value" id="stat-unacknowledged">—</span>
+        <span class="stat-label">Unacknowledged</span>
+    </div>
+    <div class="stat">
+        <span class="stat-value" id="stat-latest">—</span>
+        <span class="stat-label">Latest Event</span>
+    </div>
+</div>
+
+<div class="events-container" id="events-container">
+    <p class="events-empty">Loading events...</p>
+</div>
+{% endblock %}

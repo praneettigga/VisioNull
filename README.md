@@ -1,14 +1,14 @@
 # VisioNull — Real-Time Fall Detection System
 
-An edge-computing fall detection system. A **Raspberry Pi** with a camera detects falls in real time using MediaPipe Pose and sends HTTP webhook notifications over WiFi to a **Laptop** running a Flask dashboard.
+An edge-computing fall detection system. A **Raspberry Pi** with a camera detects falls in real time using MediaPipe Pose, keeps a rolling **15-second in-memory pre-fall buffer**, and sends alerts over WiFi to a **Laptop** running a Flask dashboard.
 
 ```
-┌──────────────────┐         HTTP POST          ┌──────────────────┐
-│   Raspberry Pi   │  ──── /webhook (WiFi) ───▶ │  Laptop (Flask)  │
-│  Camera + Pose   │                            │    Dashboard     │
-│  Fall Detection  │                            │  View alerts in  │
-│  Notification    │                            │  a web browser   │
-└──────────────────┘                            └──────────────────┘
+┌──────────────────┐   1) POST /webhook JSON    ┌──────────────────┐
+│   Raspberry Pi   │  ─────────────────────────▶ │  Laptop (Flask)  │
+│  Camera + Pose   │                             │    Dashboard     │
+│  15s RAM Buffer  │   2) POST /api/events/:id  │  View alerts +   │
+│  Fall Detection  │  ──────── clip upload ───▶ │  pre-fall clips  │
+└──────────────────┘                             └──────────────────┘
 ```
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue.svg)
@@ -22,7 +22,7 @@ An edge-computing fall detection system. A **Raspberry Pi** with a camera detect
 VisioNull/
 ├── rpi/                    # Raspberry Pi edge device
 │   ├── src/
-│   │   ├── pipeline/       # Camera, pose estimation, fall detection, dataset
+│   │   ├── pipeline/       # Camera, pose estimation, fall detection, pre-fall buffer
 │   │   ├── notification/   # HTTP webhook notifier with offline queue
 │   │   ├── config.py       # All RPi settings (thresholds, webhook URL, etc.)
 │   │   ├── main.py         # Desktop GUI app (for testing with display)
@@ -38,9 +38,10 @@ VisioNull/
 ├── laptop/                 # Laptop dashboard (Flask)
 │   ├── backend/
 │   │   ├── app.py          # Flask app factory
+│   │   ├── clip_cache.py   # RAM-only transient clip cache with TTL
 │   │   ├── config.py       # Server settings
 │   │   ├── models.py       # SQLite database (fall_events table)
-│   │   └── routes.py       # POST /webhook, GET /api/events, GET /
+│   │   └── routes.py       # /webhook + /api/events + clip upload/retrieval
 │   ├── frontend/
 │   │   ├── templates/      # Jinja2 HTML (dashboard)
 │   │   └── static/         # CSS + JS (auto-polling dashboard)
@@ -79,6 +80,7 @@ python -m src.main_pi
 ### 3. Test End-to-End
 
 Trigger a fall in front of the Pi camera. Within seconds a notification card should appear on the laptop dashboard.
+When available, the card also shows a **View pre-fall clip** action.
 
 Or test the webhook manually:
 ```bash
@@ -87,9 +89,11 @@ curl -X POST http://localhost:5000/webhook \
   -d '{"timestamp":"2026-02-23T12:00:00","device_name":"test-pi","device_location":"Lab","message":"FALL DETECTED","fall_confidence":0.95,"event_id":"test-001"}'
 ```
 
-## Webhook Payload Schema
+## Event Delivery Contract
 
-The RPi sends (and the laptop expects) this JSON on `POST /webhook`:
+### Step 1: Event metadata (`POST /webhook`)
+
+The RPi sends this JSON first:
 
 ```json
 {
@@ -102,6 +106,20 @@ The RPi sends (and the laptop expects) this JSON on `POST /webhook`:
 }
 ```
 
+### Step 2: Clip upload (`POST /api/events/<id>/clip`)
+
+After receiving the row `id` from `/webhook`, the RPi uploads a pre-fall clip to:
+
+- `/api/events/<id>/clip` (multipart form-data)
+- Form field name: `clip`
+- Content type: `video/mp4`
+
+### Clip retention policy
+
+- **RPi:** clip frames are buffered in memory only; no video files are written to disk.
+- **Laptop:** uploaded clips are stored in RAM only with TTL expiry (`VISIONULL_CLIP_TTL_SECONDS`).
+- Expired clips are not retrievable (`404`).
+
 ## Documentation
 
 | Guide | Description |
@@ -112,9 +130,4 @@ The RPi sends (and the laptop expects) this JSON on `POST /webhook`:
 ## License
 
 MIT
-
-
-curl -X POST http://<LAPTOP_IP>:5000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{"device_name":"pi-test","message":"connectivity test","fall_confidence":0.5,"event_id":"ping-001"}'
 

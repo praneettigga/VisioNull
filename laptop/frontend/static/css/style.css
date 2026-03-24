@@ -237,6 +237,12 @@ body {
     flex: 1;
 }
 
+.event-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
 .event-device {
     font-weight: 600;
     font-size: 1rem;
@@ -288,5 +294,11 @@ body {
 
     .event-top {
         flex-direction: column;
+    }
+
+    .event-actions {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
     }
 }

@@ -21,8 +21,12 @@ import sys
 import time
 import signal
 import logging
+import shutil
+import subprocess
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
+
+import numpy as np
 
 # Setup logging before imports
 logging.basicConfig(
@@ -37,12 +41,14 @@ logger = logging.getLogger(__name__)
 # Import project modules
 try:
     from src.pipeline.camera_stream import CameraStream
+    from src.pipeline.pre_fall_buffer import PreFallFrameBuffer
     from src.pipeline.pose_estimator import PoseEstimator
     from src.pipeline.fall_detector import FallDetector, FallState
     from src.notification.notifier import FallNotifier, get_notifier
     from src import config
 except ImportError:
     from pipeline.camera_stream import CameraStream
+    from pipeline.pre_fall_buffer import PreFallFrameBuffer
     from pipeline.pose_estimator import PoseEstimator
     from pipeline.fall_detector import FallDetector, FallState
     from notification.notifier import FallNotifier, get_notifier
@@ -69,6 +75,7 @@ class FallDetectionPi:
         self.pose_estimator = None
         self.fall_detector = None
         self.notifier = None
+        self.pre_fall_buffer = None
         
         # Statistics
         self.start_time = None
@@ -78,6 +85,8 @@ class FallDetectionPi:
         
         # Track if we've already notified for current fall
         self._fall_notified = False
+        self._last_state: Optional[FallState] = None
+        self._fall_anchor_time: Optional[float] = None
         
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -154,6 +163,12 @@ class FallDetectionPi:
                 timeout=config.WEBHOOK_TIMEOUT,
                 enable_queue=config.ENABLE_OFFLINE_QUEUE
             )
+
+            # Initialize rolling in-memory pre-fall buffer.
+            self.pre_fall_buffer = PreFallFrameBuffer(
+                window_seconds=config.PRE_FALL_BUFFER_SECONDS,
+                max_fps=max(config.TARGET_FPS, config.PRE_FALL_CLIP_FPS)
+            )
             
             logger.info("All components initialized successfully!")
             print()
@@ -189,6 +204,9 @@ class FallDetectionPi:
                     logger.warning("Failed to capture frame, retrying...")
                     time.sleep(0.5)
                     continue
+
+                frame_time = time.time()
+                self.pre_fall_buffer.add_frame(frame_time, frame)
                 
                 frame_height = frame.shape[0]
                 
@@ -196,12 +214,12 @@ class FallDetectionPi:
                 landmarks = self.pose_estimator.get_landmarks(frame)
                 
                 # Update fall detection
-                state, metrics = self.fall_detector.update(landmarks, frame_height)
+                state, metrics = self.fall_detector.update(landmarks, frame_height, timestamp=frame_time)
                 
                 self.frames_processed += 1
                 
                 # Handle fall detection
-                self._handle_fall_state(state, metrics)
+                self._handle_fall_state(state, metrics, frame_time)
                 
                 # Periodic status logging
                 current_time = time.time()
@@ -214,8 +232,13 @@ class FallDetectionPi:
         finally:
             self.shutdown()
     
-    def _handle_fall_state(self, state: FallState, metrics) -> None:
+    def _handle_fall_state(self, state: FallState, metrics, timestamp: float) -> None:
         """Handle fall detection state changes."""
+
+        if state == FallState.VALIDATING and self._last_state != FallState.VALIDATING:
+            # Anchor clip to the first fall trigger transition.
+            self._fall_anchor_time = timestamp
+            logger.info("Captured pre-fall anchor at first VALIDATING transition")
         
         if state == FallState.VALIDATING:
             # Log validation progress
@@ -237,20 +260,126 @@ class FallDetectionPi:
             if self._fall_notified:
                 logger.info("Person recovered, resetting fall notification flag")
                 self._fall_notified = False
+            self._fall_anchor_time = None
+
+        self._last_state = state
     
     def _send_fall_notification(self, metrics) -> None:
         """Send fall notification via webhook."""
         try:
-            success = self.notifier.notify_fall(confidence=metrics.confidence)
-            
-            if success:
+            result = self.notifier.notify_fall_with_result(confidence=metrics.confidence)
+
+            if result.get("handled"):
                 self.notifications_sent += 1
                 logger.info(f"Fall notification sent successfully (#{self.notifications_sent})")
+
+                # Upload pre-fall clip only when metadata was delivered immediately
+                # and we have a concrete server event row id.
+                server_event_id = result.get("server_event_id")
+                queued = result.get("queued", False)
+                if not queued and isinstance(server_event_id, int):
+                    self._upload_prefall_clip(server_event_id)
             else:
                 logger.warning("Failed to send notification (may be in cooldown or queued)")
                 
         except Exception as e:
             logger.error(f"Error sending notification: {e}")
+
+    def _encode_clip_ffmpeg(self, frames: List[np.ndarray], fps: int) -> Optional[bytes]:
+        """Encode a frame sequence to MP4 in memory using ffmpeg pipe."""
+        if not frames:
+            return None
+        if shutil.which("ffmpeg") is None:
+            logger.warning("ffmpeg not found; pre-fall clip upload skipped")
+            return None
+
+        height, width = frames[0].shape[:2]
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-s",
+            f"{width}x{height}",
+            "-r",
+            str(fps),
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-movflags",
+            "frag_keyframe+empty_moov",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ]
+
+        try:
+            raw = b"".join(frame.tobytes() for frame in frames)
+            proc = subprocess.run(
+                cmd,
+                input=raw,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if proc.returncode != 0:
+                logger.error(f"ffmpeg encode failed: {proc.stderr.decode('utf-8', errors='ignore')}")
+                return None
+            return proc.stdout
+        except Exception as e:
+            logger.error(f"Error encoding pre-fall clip: {e}")
+            return None
+
+    def _upload_prefall_clip(self, server_event_id: int) -> None:
+        """Extract, encode, and upload a pre-fall clip for an existing event."""
+        if self.pre_fall_buffer is None:
+            return
+
+        anchor_time = self._fall_anchor_time
+        if anchor_time is None:
+            anchor_time = self.pre_fall_buffer.latest_timestamp()
+
+        if anchor_time is None:
+            logger.warning("No buffered frames available for pre-fall clip")
+            return
+
+        frames = self.pre_fall_buffer.get_last_seconds_until(anchor_time, config.PRE_FALL_BUFFER_SECONDS)
+        if not frames:
+            logger.warning("Pre-fall buffer window empty; clip upload skipped")
+            return
+
+        clip_bytes = self._encode_clip_ffmpeg(frames, fps=config.PRE_FALL_CLIP_FPS)
+        if not clip_bytes:
+            return
+
+        if len(clip_bytes) > config.MAX_CLIP_UPLOAD_BYTES:
+            logger.warning(
+                f"Pre-fall clip size {len(clip_bytes)} exceeds MAX_CLIP_UPLOAD_BYTES={config.MAX_CLIP_UPLOAD_BYTES}"
+            )
+            return
+
+        for attempt in range(config.CLIP_UPLOAD_MAX_RETRIES + 1):
+            success = self.notifier.upload_prefall_clip(
+                server_event_id=server_event_id,
+                clip_bytes=clip_bytes,
+                filename=f"prefall-{server_event_id}.mp4",
+                content_type="video/mp4",
+                timeout=config.CLIP_UPLOAD_TIMEOUT,
+            )
+            if success:
+                return
+            if attempt < config.CLIP_UPLOAD_MAX_RETRIES:
+                time.sleep(1.0)
+
+        logger.warning(f"Failed to upload pre-fall clip for event row #{server_event_id}")
     
     def _log_status(self) -> None:
         """Log periodic status update."""

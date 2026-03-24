@@ -33,6 +33,10 @@ async function acknowledgeEvent(id) {
     return resp.json();
 }
 
+function openClip(id) {
+    window.open(`/api/events/${id}/clip`, "_blank", "noopener,noreferrer");
+}
+
 // ── Rendering ──
 
 function formatTimestamp(iso) {
@@ -52,6 +56,10 @@ function renderEvent(ev) {
 
     const confPct = ((ev.confidence || 0) * 100).toFixed(0);
 
+    const clipButton = ev.has_clip
+        ? `<button class="btn btn-secondary" onclick="onViewClip(${ev.id})">View pre-fall clip</button>`
+        : "";
+
     card.innerHTML = `
         <div class="event-top">
             <div class="event-info">
@@ -66,11 +74,14 @@ function renderEvent(ev) {
                     <span>${esc(ev.event_id)}</span>
                 </div>
             </div>
-            <button class="btn btn-acknowledge"
-                    ${ev.acknowledged ? "disabled" : ""}
-                    onclick="onAcknowledge(${ev.id})">
-                ${ev.acknowledged ? "Acknowledged" : "Acknowledge"}
-            </button>
+            <div class="event-actions">
+                ${clipButton}
+                <button class="btn btn-acknowledge"
+                        ${ev.acknowledged ? "disabled" : ""}
+                        onclick="onAcknowledge(${ev.id})">
+                    ${ev.acknowledged ? "Acknowledged" : "Acknowledge"}
+                </button>
+            </div>
         </div>
     `;
     return card;
@@ -125,6 +136,7 @@ async function onAcknowledge(id) {
 
 // Expose globally for inline onclick
 window.onAcknowledge = onAcknowledge;
+window.onViewClip = openClip;
 
 async function refresh() {
     try {

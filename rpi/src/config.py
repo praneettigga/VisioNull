@@ -96,6 +96,25 @@ MAX_RETRY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 5
 
 # =============================================================================
+# PRE-FALL CLIP SETTINGS
+# =============================================================================
+
+# Keep this many seconds of frames in memory for pre-fall extraction.
+PRE_FALL_BUFFER_SECONDS = 15
+
+# Target FPS for encoded pre-fall clips.
+PRE_FALL_CLIP_FPS = 12
+
+# Clip upload timeout (seconds). Metadata webhook timeout remains WEBHOOK_TIMEOUT.
+CLIP_UPLOAD_TIMEOUT = 45
+
+# Clip upload retries (in-memory only; never persisted).
+CLIP_UPLOAD_MAX_RETRIES = 2
+
+# Maximum accepted clip size for upload (bytes). Default: 20 MB.
+MAX_CLIP_UPLOAD_BYTES = 20 * 1024 * 1024
+
+# =============================================================================
 # QUEUE SETTINGS (for offline notifications)
 # =============================================================================
 

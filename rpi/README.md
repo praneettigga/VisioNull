@@ -372,6 +372,13 @@ FALL_CONFIDENCE_THRESHOLD = 0.7      # Minimum confidence to notify
 # Notification settings
 NOTIFICATION_COOLDOWN_SECONDS = 30   # Prevent spam
 ENABLE_OFFLINE_QUEUE = True          # Queue notifications when offline
+
+# Pre-fall clip settings (RAM-only buffer)
+PRE_FALL_BUFFER_SECONDS = 15          # Keep last 15s of frames in memory
+PRE_FALL_CLIP_FPS = 12                # Encoded clip FPS
+CLIP_UPLOAD_TIMEOUT = 45              # Timeout for clip upload request only
+CLIP_UPLOAD_MAX_RETRIES = 2           # In-memory retry attempts
+MAX_CLIP_UPLOAD_BYTES = 20971520      # 20 MB max clip payload
 ```
 
 #### Webhook Setup
@@ -388,6 +395,16 @@ The system sends HTTP POST requests with JSON payload:
   "event_id": "living-room-pi-20260209143045-0001"
 }
 ```
+
+When a fall is validated, the RPi now uses a two-step transfer:
+
+1. POST metadata to `/webhook` (existing behavior)
+2. Upload pre-fall clip to `/api/events/<id>/clip` using multipart form-data (`clip` field)
+
+The clip is extracted from a rolling 15-second in-memory frame buffer anchored to the first `VALIDATING` transition.
+No clip files are written to disk on the RPi.
+
+> Note: MP4 encoding uses `ffmpeg` via stdin/stdout pipes. Install ffmpeg on the RPi for clip upload support.
 
 **Webhook examples:**
 - **Testing**: [webhook.site](https://webhook.site) - Get a free test URL
@@ -668,7 +685,7 @@ import smtplib
 **3. Smart Home Integration:**
 - **Home Assistant**: Use webhook automation
 - **IFTTT**: Use Webhooks service
-- **Pushover/Pushbullet**: For mobile notifications
+- **/Pushbullet**: For mobile notifications
 
 **4. Local Alerts:**
 

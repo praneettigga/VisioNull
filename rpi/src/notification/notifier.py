@@ -9,9 +9,10 @@ import threading
 import logging
 import urllib.request
 import urllib.error
+import uuid
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, asdict
 from queue import Queue, Empty
 
@@ -200,11 +201,22 @@ class FallNotifier:
         Returns:
             True if successful, False otherwise
         """
+        success, _ = self._send_http_request_with_response(notification)
+        return success
+
+    def _send_http_request_with_response(
+        self,
+        notification: FallNotification
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """
+        Send HTTP POST request with notification data.
+
+        Returns:
+            Tuple of (success, parsed JSON response or None)
+        """
         try:
-            # Prepare payload
             payload = json.dumps(notification.to_dict()).encode('utf-8')
-            
-            # Create request
+
             req = urllib.request.Request(
                 self.webhook_url,
                 data=payload,
@@ -214,23 +226,30 @@ class FallNotifier:
                 },
                 method='POST'
             )
-            
-            # Send request
+
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
                 status = response.getcode()
+                body = response.read().decode('utf-8').strip()
+                parsed: Optional[Dict[str, Any]] = None
+                if body:
+                    try:
+                        parsed = json.loads(body)
+                    except json.JSONDecodeError:
+                        parsed = None
+
                 if 200 <= status < 300:
                     logger.info(f"Notification sent successfully: {notification.event_id}, status={status}")
-                    return True
-                else:
-                    logger.warning(f"Notification failed with status {status}: {notification.event_id}")
-                    return False
-                    
+                    return True, parsed
+
+                logger.warning(f"Notification failed with status {status}: {notification.event_id}")
+                return False, parsed
+
         except urllib.error.URLError as e:
             logger.error(f"Network error sending notification: {e}")
-            return False
+            return False, None
         except Exception as e:
             logger.error(f"Error sending notification: {e}")
-            return False
+            return False, None
     
     def notify_fall(self, confidence: float = 1.0) -> bool:
         """
@@ -275,6 +294,131 @@ class FallNotifier:
             return True  # Queued counts as "handled"
         
         return success
+
+    def notify_fall_with_result(self, confidence: float = 1.0) -> Dict[str, Any]:
+        """
+        Send fall notification and return delivery details.
+
+        Returns:
+            {
+                "handled": bool,         # sent or queued
+                "queued": bool,
+                "event_id": str,
+                "server_event_id": Optional[int],
+            }
+        """
+        with self._lock:
+            if self._is_cooldown_active():
+                remaining = self.cooldown_seconds - (time.time() - self._last_notification_time)
+                logger.debug(f"Cooldown active, {remaining:.1f}s remaining")
+                return {
+                    "handled": False,
+                    "queued": False,
+                    "event_id": "",
+                    "server_event_id": None,
+                }
+
+            self._last_notification_time = time.time()
+
+        notification = FallNotification(
+            timestamp=datetime.now().isoformat(),
+            device_name=self.device_name,
+            device_location=self.device_location,
+            message="FALL DETECTED - Immediate attention required!",
+            fall_confidence=round(confidence, 2),
+            event_id=self._generate_event_id()
+        )
+
+        self._log_fall_event(notification)
+
+        success, response_data = self._send_http_request_with_response(notification)
+        if success:
+            server_event_id = None
+            if isinstance(response_data, dict):
+                response_id = response_data.get("id")
+                if isinstance(response_id, int):
+                    server_event_id = response_id
+            return {
+                "handled": True,
+                "queued": False,
+                "event_id": notification.event_id,
+                "server_event_id": server_event_id,
+            }
+
+        if self.enable_queue:
+            self._queue.add(notification)
+            logger.info(f"Notification queued for retry: {notification.event_id}")
+            return {
+                "handled": True,
+                "queued": True,
+                "event_id": notification.event_id,
+                "server_event_id": None,
+            }
+
+        return {
+            "handled": False,
+            "queued": False,
+            "event_id": notification.event_id,
+            "server_event_id": None,
+        }
+
+    def upload_prefall_clip(
+        self,
+        server_event_id: int,
+        clip_bytes: bytes,
+        filename: str = "prefall.mp4",
+        content_type: str = "video/mp4",
+        timeout: Optional[int] = None,
+    ) -> bool:
+        """Upload a pre-fall clip in a second request tied to a server event row ID."""
+        if server_event_id <= 0:
+            logger.error("Invalid server_event_id for clip upload")
+            return False
+        if not clip_bytes:
+            logger.error("Clip upload requested with empty payload")
+            return False
+
+        boundary = f"----VisioNullBoundary{uuid.uuid4().hex}"
+        crlf = "\r\n"
+
+        preamble = (
+            f"--{boundary}{crlf}"
+            f"Content-Disposition: form-data; name=\"clip\"; filename=\"{filename}\"{crlf}"
+            f"Content-Type: {content_type}{crlf}{crlf}"
+        ).encode("utf-8")
+        ending = f"{crlf}--{boundary}--{crlf}".encode("utf-8")
+        body = preamble + clip_bytes + ending
+
+        upload_url = self.webhook_url.rstrip("/")
+        if upload_url.endswith("/webhook"):
+            upload_url = upload_url[:-len("/webhook")]
+        upload_url = f"{upload_url}/api/events/{server_event_id}/clip"
+
+        req = urllib.request.Request(
+            upload_url,
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
+                "User-Agent": "VisioNull-FallDetector/1.0",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as response:
+                status = response.getcode()
+                if 200 <= status < 300:
+                    logger.info(f"Pre-fall clip uploaded for event row #{server_event_id}")
+                    return True
+                logger.warning(f"Clip upload failed for event row #{server_event_id}, status={status}")
+                return False
+        except urllib.error.URLError as e:
+            logger.error(f"Clip upload network error for event row #{server_event_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Clip upload error for event row #{server_event_id}: {e}")
+            return False
     
     def _log_fall_event(self, notification: FallNotification) -> None:
         """Log fall event to file."""

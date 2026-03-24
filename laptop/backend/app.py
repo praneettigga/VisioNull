@@ -4,7 +4,8 @@ Laptop Dashboard — Flask application factory
 
 import os
 from flask import Flask
-from backend.config import SECRET_KEY
+from backend.config import SECRET_KEY, CLIP_CACHE_TTL_SECONDS
+from backend.clip_cache import init_clip_cache
 from backend.models import init_db
 
 
@@ -19,6 +20,7 @@ def create_app() -> Flask:
 
     # Initialize database
     init_db()
+    init_clip_cache(CLIP_CACHE_TTL_SECONDS)
 
     # Register routes
     from backend.routes import bp

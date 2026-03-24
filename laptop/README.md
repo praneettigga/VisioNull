@@ -10,6 +10,7 @@ This directory (`laptop/`) contains all laptop/server code. See [../README.md](.
 
 - **Webhook endpoint** — receives HTTP POST notifications from the RPi
 - **SQLite storage** — persists all fall events to disk
+- **Transient clip cache** — stores pre-fall clips in RAM only (auto-expiring)
 - **Live dashboard** — auto-refreshing web page with event cards
 - **Event management** — acknowledge/dismiss individual events
 - **Filtering** — show all, unacknowledged only, or acknowledged only
@@ -71,6 +72,8 @@ Open **http://localhost:5000** in your browser to see the dashboard.
 | `VISIONULL_PORT` | `5000` | Port number |
 | `VISIONULL_DEBUG` | `true` | Flask debug mode |
 | `VISIONULL_SECRET_KEY` | (dev key) | Flask secret key — change in production |
+| `VISIONULL_CLIP_TTL_SECONDS` | `300` | Clip retention in RAM (seconds) |
+| `VISIONULL_MAX_CLIP_SIZE_BYTES` | `20971520` | Max accepted clip upload size |
 
 Example:
 
@@ -104,6 +107,7 @@ All fields are optional; the server stores whatever is provided.
 ### `GET /api/events`
 
 Returns stored events as JSON array (newest first).
+Each event includes `has_clip` (boolean) for transient clip availability.
 
 Query parameters:
 
@@ -116,6 +120,25 @@ Query parameters:
 Marks an event as acknowledged.
 
 **Response:** `200 OK`
+
+### `POST /api/events/<id>/clip`
+
+Uploads a pre-fall clip for an existing event using multipart form-data:
+
+- Field name: `clip`
+- Content type: `video/*` (or `application/octet-stream`)
+
+**Response:** `200 OK`
+
+### `GET /api/events/<id>/clip`
+
+Streams the cached pre-fall clip if still available in memory.
+
+- Returns `404` if missing or expired
+
+**Response:** `200 OK` with video bytes
+
+> Clip persistence policy: clips are never written to disk by the laptop server. They stay in RAM only until TTL expiry.
 
 ---
 

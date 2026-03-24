@@ -8,7 +8,9 @@ Endpoints:
     GET  /                  — Dashboard page
 """
 
-from flask import Blueprint, request, jsonify, render_template
+from flask import Blueprint, request, jsonify, render_template, Response
+from backend.config import MAX_CLIP_SIZE_BYTES
+from backend.clip_cache import get_clip_cache
 from backend.models import insert_event, get_events, acknowledge_event
 
 bp = Blueprint("main", __name__)
@@ -70,6 +72,9 @@ def api_events():
     offset = request.args.get("offset", 0, type=int)
 
     events = get_events(acknowledged=acknowledged, limit=limit, offset=offset)
+    clip_cache = get_clip_cache()
+    for event in events:
+        event["has_clip"] = clip_cache.has_clip(event["id"])
     return jsonify(events)
 
 
@@ -80,3 +85,40 @@ def api_acknowledge(event_id: int):
     if updated:
         return jsonify({"status": "ok"})
     return jsonify({"error": "Event not found"}), 404
+
+
+@bp.route("/api/events/<int:event_id>/clip", methods=["POST"])
+def api_upload_clip(event_id: int):
+    """Upload an in-memory pre-fall clip for an existing event."""
+    if "clip" not in request.files:
+        return jsonify({"error": "Missing clip file field"}), 400
+
+    file = request.files["clip"]
+    if not file.filename:
+        return jsonify({"error": "Empty clip filename"}), 400
+
+    clip_bytes = file.read()
+    if not clip_bytes:
+        return jsonify({"error": "Empty clip payload"}), 400
+    if len(clip_bytes) > MAX_CLIP_SIZE_BYTES:
+        return jsonify({"error": "Clip exceeds maximum allowed size"}), 413
+
+    content_type = file.mimetype or "application/octet-stream"
+    if not (content_type.startswith("video/") or content_type == "application/octet-stream"):
+        return jsonify({"error": "Unsupported clip content type"}), 415
+
+    clip_cache = get_clip_cache()
+    clip_cache.put(event_id=event_id, clip_bytes=clip_bytes, mime_type=content_type)
+
+    return jsonify({"status": "ok", "event_id": event_id}), 200
+
+
+@bp.route("/api/events/<int:event_id>/clip", methods=["GET"])
+def api_get_clip(event_id: int):
+    """Stream a cached pre-fall clip if still in memory."""
+    clip_cache = get_clip_cache()
+    clip = clip_cache.get(event_id)
+    if clip is None:
+        return jsonify({"error": "Clip not found or expired"}), 404
+
+    return Response(clip.clip_bytes, mimetype=clip.mime_type)
